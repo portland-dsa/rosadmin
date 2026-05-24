@@ -171,12 +171,13 @@ def _await_settings(settings: GroupSettings, settings_service: GroupssettingsRes
     assert all(remote_settings.get(k) == v for k, v in settings.settings_group.items())
 
     remote_labels = ci_service.groups().get(name=settings.cloud_identity_name).execute()
-    assert remote_labels.get("labels") == settings.cloud_identity_group["labels"]
+    assert "labels" in settings.cloud_identity_group
+    assert remote_labels.get("labels") == settings.cloud_identity_group["labels"] 
     
 @retry(retry=retry_if_exception(lambda e: isinstance(e,AssertionError)), wait=wait_fixed(2), stop=stop_after_delay(60))
 def _await_member_add(settings: GroupSettings, admin_service: DirectoryResource, member_email: str):
     result = admin_service.members().hasMember(groupKey=settings.email, memberKey=member_email).execute()
-    assert result["isMember"]
+    assert "isMember" in result and result["isMember"]
 
 @one_shot_app.command(name="test-create-group")
 def one_shot_test_create_group(delete_at_end: bool = True) -> None:

@@ -1,7 +1,22 @@
 [project]
 name = "workspace-sync"
 version = "0.1.0"
-description = "Add your description here"
+description = "Synchronizes Google Groups with an external member list from a different backend. This is a jank solution for orgs that can't afford an account for every user."
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "google-api-python-client>=2.196.0",
+    "google-auth>=2.53.0",
+    "google-auth-oauthlib>=1.4.0",
+    "google-cloud-logging>=3.15.0",
+]
+
+[dependency-groups]
+dev = [
+    "black>=26.5.1",
+    "google-api-python-client-stubs>=1.37.0",
+    "isort>=8.0.1",
+]
+
+[tool.pyright]
+reportMissingModuleSource = "none"

@@ -2,13 +2,20 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Optional
 import logging
+import os
+import json
 
 from alive_progress import alive_bar
 from cyclopts import App
 from googleapiclient.errors import HttpError
+from google.auth.transport.requests import Request
+from google.oauth2 import service_account
+from google.oauth2.service_account import Credentials
+from googleapiclient import discovery
 from rich import print as rprint
 from rich.rule import Rule
 from tenacity import retry, retry_if_exception, stop_after_delay, wait_fixed
+
 
 if TYPE_CHECKING:
     from googleapiclient._apis.admin.directory_v1 import DirectoryResource, Group
@@ -21,7 +28,6 @@ TEST_GROUP_EMAIL = "i-made-a-test-group@portlanddsa.org"
 TEST_GROUP_NAME = "A stupid Script Test Group"
 TEST_GROUP_DESCRIPTION = "A stupid test security group"
 TEST_MEMBER_EMAIL = "info@portlanddsa.org"
-
 
 TEST_SETTINGS: SettingsGroup = {
                 "whoCanJoin": "INVITED_CAN_JOIN",           # only invited users
@@ -50,6 +56,28 @@ TEST_SECURITY_LABEL: CiGroup = {
 
 logger = logging.getLogger(__name__)
 
+def get_credentials() -> Credentials:
+    if "CREDENTIALS_JSON" in os.environ:
+        specification = json.loads(os.environ["CREDENTIALS_JSON"])
+        return Credentials.from_service_account_info(
+                info=specification,
+                scopes=[
+                    "https://www.googleapis.com/auth/admin.directory.group",
+                    "https://www.googleapis.com/auth/cloud-identity.groups",
+                    "https://www.googleapis.com/auth/apps.groups.settings",
+                ],
+            ).with_subject("info@portlanddsa.org")
+    elif "CREDENTIALS_PATH" in os.environ:
+        return Credentials.from_service_account_file(
+                filename=os.environ["CREDENTIALS_PATH"],
+                scopes=[
+                    "https://www.googleapis.com/auth/admin.directory.group",
+                    "https://www.googleapis.com/auth/cloud-identity.groups",
+                    "https://www.googleapis.com/auth/apps.groups.settings",
+                ],
+            ).with_subject("info@portlanddsa.org")
+    else:
+        raise EnvironmentError("Please set either CREDENTIALS_JSON or CREDENTIALS_PATH. If both are set, CREDENTIALS_JSON is preferred")
 
 class GroupSettings:
     @property
@@ -153,22 +181,12 @@ def _await_member_add(settings: GroupSettings, admin_service: DirectoryResource,
 @one_shot_app.command(name="test-create-group")
 def one_shot_test_create_group(delete_at_end: bool = True) -> None:
     """Create a test security group, configure its settings, and add a test member."""
-    from google.auth.transport.requests import Request
-    from google.oauth2 import service_account
-    from googleapiclient import discovery
 
     settings = GroupSettings()
 
     with alive_bar(10, title="test-create-group") as bar:
         bar.text("Authenticating")
-        creds = service_account.Credentials.from_service_account_file(
-            "../test-script/groups-rbam.json",
-            scopes=[
-                "https://www.googleapis.com/auth/admin.directory.group",
-                "https://www.googleapis.com/auth/cloud-identity.groups",
-                "https://www.googleapis.com/auth/apps.groups.settings",
-            ],
-        ).with_subject("info@portlanddsa.org")
+        creds = get_credentials()
         creds.refresh(Request())
         admin_service: DirectoryResource = discovery.build("admin", "directory_v1", credentials=creds)
         identity_service: CloudIdentityResource = discovery.build("cloudidentity", "v1", credentials=creds)

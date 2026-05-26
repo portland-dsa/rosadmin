@@ -1,6 +1,9 @@
 name: CI
 run-name: "${{ github.actor }} — workspace-sync CI"
-on: [pull_request]
+on:
+    push:
+        branches: [main]
+    pull_request:
 
 jobs:
     lint:

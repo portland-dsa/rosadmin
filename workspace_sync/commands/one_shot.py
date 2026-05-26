@@ -63,31 +63,28 @@ TEST_SECURITY_LABEL: CiGroup = {
 
 logger = logging.getLogger(__name__)
 
+SCOPES = [
+    "https://www.googleapis.com/auth/admin.directory.group",
+    "https://www.googleapis.com/auth/cloud-identity.groups",
+    "https://www.googleapis.com/auth/apps.groups.settings",
+]
+IMPERSONATION_SUBJECT = "info@portlanddsa.org"
+
 
 def get_credentials() -> Credentials:
     if "CREDENTIALS_JSON" in os.environ:
-        specification = json.loads(os.environ["CREDENTIALS_JSON"])
-        return Credentials.from_service_account_info(
-            info=specification,
-            scopes=[
-                "https://www.googleapis.com/auth/admin.directory.group",
-                "https://www.googleapis.com/auth/cloud-identity.groups",
-                "https://www.googleapis.com/auth/apps.groups.settings",
-            ],
-        ).with_subject("info@portlanddsa.org")
-    elif "CREDENTIALS_PATH" in os.environ:
-        return Credentials.from_service_account_file(
-            filename=os.environ["CREDENTIALS_PATH"],
-            scopes=[
-                "https://www.googleapis.com/auth/admin.directory.group",
-                "https://www.googleapis.com/auth/cloud-identity.groups",
-                "https://www.googleapis.com/auth/apps.groups.settings",
-            ],
-        ).with_subject("info@portlanddsa.org")
+        info = json.loads(os.environ["CREDENTIALS_JSON"])
+        creds = Credentials.from_service_account_info(info=info, scopes=SCOPES)
+    elif key_path := os.environ.get("CREDENTIALS_FILE") or os.environ.get(
+        "CREDENTIALS_PATH"
+    ):
+        creds = Credentials.from_service_account_file(filename=key_path, scopes=SCOPES)
     else:
         raise EnvironmentError(
-            "Please set either CREDENTIALS_JSON or CREDENTIALS_PATH. If both are set, CREDENTIALS_JSON is preferred"
+            "Please set CREDENTIALS_JSON, CREDENTIALS_FILE, or CREDENTIALS_PATH. "
+            "If CREDENTIALS_JSON is set it takes precedence."
         )
+    return creds.with_subject(IMPERSONATION_SUBJECT)
 
 
 class GroupSettings:

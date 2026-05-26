@@ -12,6 +12,7 @@ wheels/
 # ── AI assistants & code tools ──────────────────────────────────────────────
 # Claude Code
 .claude/
+CLAUDE.*.md
 
 # Cursor
 .cursor/

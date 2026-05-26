@@ -60,7 +60,7 @@ With luck, this will create a group for you, add a member, then grab the group i
 If you don't want to delete the test group at the end (say you want to go into the admin panel and inspect it), you can run
 
 ```zsh
-uv run workspace-sync one-shot test-create-group --delete-at-end=False
+uv run workspace-sync one-shot test-create-group --no-delete-at-end
 ```
 
 Just make sure to delete the group manually if you don't want it there.

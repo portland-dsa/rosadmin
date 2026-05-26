@@ -1,3 +1,35 @@
+"""
+`GoogleGroup` — a unified async handle to a single Workspace group across
+Google's three separate group-management APIs (Admin Directory v1, Cloud
+Identity v1, and Groups Settings v1).
+
+Because no single API covers all group-management operations, every group
+requires three service clients. This module hides that, along with the
+eventual-consistency waits that come after mutations. See `GoogleGroup` for
+the central type and `GoogleGroupBuilder` for creating new remote groups.
+
+**Async/sync convention**: public methods that hit the API are ``async`` thin wrappers that
+offload blocking work to ``asyncio.to_thread``; the ``_raw_*`` methods do the
+actual API calls; the ``_await_*`` tenacity retry helpers stay synchronous by
+design (tenacity doesn't support coroutines the same way). All three layers run
+inside threads, never on the event loop directly.
+
+Usage::
+
+    # Create a new group
+    group = await (
+        GoogleGroupBuilder()
+        .email("my-group@example.org")
+        .name("My Group")
+        .description("...")
+        .secure_defaults()
+        .build_remote(creds)
+    )
+
+    # Hydrate from an existing remote group
+    group = await GoogleGroup.from_remote("my-group@example.org", creds)
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -22,6 +54,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Secure-by-default Groups Settings payload: invite-only join, owners-only
+#: visibility, no external members, all messages moderated. Suitable for an
+#: internal security group that should not appear in the global address list.
 SECURE_SETTINGS: SettingsGroup = {
     "whoCanJoin": "INVITED_CAN_JOIN",
     "whoCanViewMembership": "ALL_OWNERS_CAN_VIEW",
@@ -40,6 +75,9 @@ SECURE_SETTINGS: SettingsGroup = {
     "spamModerationLevel": "REJECT",
 }
 
+#: Cloud Identity labels that designate a group as both a discussion forum and a
+#: security group. Google requires empty strings for the label values — the
+#: presence of the key is what matters, not the value.
 SECURITY_LABEL: CiGroup = {
     "labels": {
         "cloudidentity.googleapis.com/groups.discussion_forum": "",
@@ -49,12 +87,19 @@ SECURITY_LABEL: CiGroup = {
 
 
 class _GroupStillExists(Exception):
-    pass
+    """Raised by `_await_deletion` while the group is still visible to Admin Directory."""
 
 
 def _build_services(
     creds: Credentials,
 ) -> tuple[DirectoryResource, CloudIdentityResource, GroupssettingsResource]:
+    """Build the three Google API service clients required by `GoogleGroup`.
+
+    Returns a ``(admin, identity, settings)`` tuple: Admin Directory v1, Cloud
+    Identity v1, and Groups Settings v1 respectively. ``cache_discovery=False``
+    suppresses the spurious ``file_cache`` warning from the discovery client.
+    This is a blocking call and should always run inside ``asyncio.to_thread``.
+    """
     admin: DirectoryResource = discovery.build(
         "admin", "directory_v1", credentials=creds, cache_discovery=False
     )
@@ -68,6 +113,17 @@ def _build_services(
 
 
 class GoogleGroup:
+    """A handle to a single Google Workspace group across all three management APIs.
+
+    Combines Admin Directory v1, Cloud Identity v1, and Groups Settings v1 into
+    one object so callers don't have to juggle three clients or know which API
+    owns which operation.
+
+    Don't construct this directly. Use `GoogleGroupBuilder.build_remote` to
+    create a new remote group, or `GoogleGroup.from_remote` to hydrate an
+    existing one.
+    """
+
     def __init__(
         self,
         email: str,
@@ -91,10 +147,16 @@ class GoogleGroup:
 
     @property
     def group_info(self) -> Group:
+        """Admin Directory insert/patch body for the basic group fields."""
         return {"email": self.email, "name": self.name, "description": self.description}
 
     @property
     def cloud_identity_name(self) -> str:
+        """The ``groups/{id}`` resource name required by the Cloud Identity API.
+
+        Raises:
+            ValueError: if the group hasn't been created or fetched yet (``id`` is None).
+        """
         if self.id is None:
             raise ValueError("id not set — has the group been created yet?")
         return f"groups/{self.id}"
@@ -111,6 +173,12 @@ class GoogleGroup:
         stop=stop_after_delay(60),
     )
     def _await_creation(self) -> None:
+        """Poll until the new group is visible to both Groups Settings and Cloud Identity.
+
+        Admin Directory insert returns immediately, but the other two APIs lag
+        and return 404 for an indeterminate period afterward. Retries every 2s
+        for up to 60s.
+        """
         self._settings.groups().get(groupUniqueId=self.email).execute()
         self._identity.groups().get(name=self.cloud_identity_name).execute()
 
@@ -123,6 +191,12 @@ class GoogleGroup:
         stop=stop_after_delay(60),
     )
     def _await_deletion(self) -> None:
+        """Poll until Admin Directory confirms the group is gone (returns 404).
+
+        Raises `_GroupStillExists` to keep retrying while the group is still
+        present. Non-404 HTTP errors are also retried;
+        404 is the success condition and is swallowed.
+        """
         try:
             self._admin.groups().get(groupKey=self.email).execute()
             raise _GroupStillExists()
@@ -138,6 +212,12 @@ class GoogleGroup:
         stop=stop_after_delay(60),
     )
     def _await_settings(self) -> None:
+        """Poll until the remote settings and labels match what was patched.
+
+        The Groups Settings and Cloud Identity ``patch`` calls are subject to
+        the same propagation lag as creation — the API accepts the write but the
+        read doesn't reflect it immediately.
+        """
         remote = self._settings.groups().get(groupUniqueId=self.email).execute()
         assert all(remote.get(k) == v for k, v in self.settings_group.items())
 
@@ -153,6 +233,7 @@ class GoogleGroup:
         stop=stop_after_delay(60),
     )
     def _await_member_add(self, member_email: str) -> None:
+        """Poll ``hasMember`` until the newly added member is visible."""
         result = (
             self._admin.members()
             .hasMember(groupKey=self.email, memberKey=member_email)
@@ -165,12 +246,14 @@ class GoogleGroup:
     # ------------------------------------------------------------------
 
     def _raw_create(self) -> None:
+        """Insert the group via Admin Directory, set ``id``, then wait for propagation."""
         group: Group = self._admin.groups().insert(body=self.group_info).execute()
         assert "id" in group
         self.id = group["id"]
         self._await_creation()
 
     def _raw_configure(self) -> None:
+        """Patch Cloud Identity labels and Groups Settings, then wait for both to propagate."""
         self._identity.groups().patch(
             name=self.cloud_identity_name,
             updateMask="labels",
@@ -183,6 +266,7 @@ class GoogleGroup:
         self._await_settings()
 
     def _raw_add_member(self, email: str, role: str) -> None:
+        """Insert a member via Admin Directory and wait until ``hasMember`` confirms it."""
         self._admin.members().insert(
             groupKey=self.email,
             body={"email": email, "role": role},
@@ -190,6 +274,10 @@ class GoogleGroup:
         self._await_member_add(email)
 
     def _raw_delete(self, missing_ok: bool) -> None:
+        """Delete the group via Admin Directory and wait until it's gone.
+
+        If ``missing_ok`` is true, a 404 on the initial fetch is silently ignored.
+        """
         try:
             self._admin.groups().get(groupKey=self.email).execute()
             self._admin.groups().delete(groupKey=self.email).execute()
@@ -215,7 +303,8 @@ class GoogleGroup:
         return ci.get("labels", {})  # type: ignore[return-value]
 
     def _raw_fetch(self) -> None:
-        """Populate this object's state from the remote group."""
+        """Populate ``id``, ``name``, ``description``, ``settings_group``, and
+        ``cloud_identity_group`` from the remote group state."""
         g: Group = self._admin.groups().get(groupKey=self.email).execute()
         assert "id" in g
         self.id = g["id"]
@@ -233,6 +322,12 @@ class GoogleGroup:
 
     @classmethod
     async def from_remote(cls, email: str, creds: Credentials) -> GoogleGroup:
+        """Construct a `GoogleGroup` from an existing remote group.
+
+        Fetches the group's basic info, settings, and Cloud Identity labels in one
+        call. Raises ``HttpError`` (status 404) if the group doesn't exist.
+        """
+
         def _init() -> GoogleGroup:
             admin, identity, settings_svc = _build_services(creds)
             group = cls(
@@ -250,26 +345,52 @@ class GoogleGroup:
 
         return await asyncio.to_thread(_init)
 
-    async def configure(self) -> None:
+    async def configure(self, new_settings: SettingsGroup) -> None:
+        """Updates the remote Cloud Identity labels and GroupsSettings to the passed in value"""
+        self.settings_group = new_settings
         await asyncio.to_thread(self._raw_configure)
 
     async def add_member(self, email: str, role: str = "MEMBER") -> None:
+        """Add a member to the group. ``role`` is ``"MEMBER"`` by default; ``"OWNER"`` and ``"MANAGER"`` are also valid."""
         await asyncio.to_thread(self._raw_add_member, email, role)
 
     async def list_members(self) -> list:
+        """Returns a list of all members in the group. This currently does not support pagination."""
         return await asyncio.to_thread(self._raw_list_members)
 
     async def get_settings(self) -> SettingsGroup:
+        """Retrieves all settings about the group such as and permissions"""
         return await asyncio.to_thread(self._raw_get_settings)
 
     async def get_labels(self) -> dict:
+        """Retrieves the labels of the GoogleGroup, generally this will just be whether it's a Mailing group (always true) and a Security Group."""
         return await asyncio.to_thread(self._raw_get_labels)
 
     async def delete(self, missing_ok: bool = False) -> None:
+        """Delete the remote group. Pass ``missing_ok=True`` to silently ignore a 404."""
         await asyncio.to_thread(self._raw_delete, missing_ok)
 
 
 class GoogleGroupBuilder:
+    """Fluent builder that creates a new remote Workspace group and returns a ready `GoogleGroup`.
+
+    The name ``build_remote`` is deliberate — calling it creates a real group in
+    Google Workspace, unlike a plain ``build`` that would only construct a local
+    object.
+
+    Usage::
+
+        group = await (
+            GoogleGroupBuilder()
+            .email("my-group@example.org")
+            .name("My Group")
+            .description("...")
+            .secure_defaults()
+            .replace_if_exists()
+            .build_remote(creds)
+        )
+    """
+
     def __init__(self) -> None:
         self._email: Optional[str] = None
         self._name: Optional[str] = None
@@ -279,35 +400,55 @@ class GoogleGroupBuilder:
         self._replace_if_exists: bool = False
 
     def email(self, email: str) -> GoogleGroupBuilder:
+        """Declares the email that will define the Google Group, must be globally unique. Should generally be `@your-domain.org`."""
         self._email = email
         return self
 
     def name(self, name: str) -> GoogleGroupBuilder:
+        """Sets the display name of the Google Group"""
         self._name = name
         return self
 
     def description(self, description: str) -> GoogleGroupBuilder:
+        """The user-friendly description of the group"""
         self._description = description
         return self
 
     def settings(self, settings: SettingsGroup) -> GoogleGroupBuilder:
+        """Sets the general settings for the group, if you want the most restricted options, use ``secure_defaults`` instead."""
         self._settings_group = settings
         return self
 
     def label(self, label: CiGroup) -> GoogleGroupBuilder:
+        """Sets the labels of the Google Group, generally used just to declare it a Security Group. Probably just use ```secure_defaults```"""
         self._cloud_identity_group = label
         return self
 
     def secure_defaults(self) -> GoogleGroupBuilder:
+        """
+        A convenience method for ```settings``` which will use ``DEFAULT_SETTINGS`` to create the most restricted group possible, and
+        declare it a security group.
+        """
         self._settings_group = SECURE_SETTINGS
         self._cloud_identity_group = SECURITY_LABEL
         return self
 
     def replace_if_exists(self, value: bool = True) -> GoogleGroupBuilder:
+        """If the group already exists, delete it before creating. Useful for crash recovery in dev/test workflows."""
         self._replace_if_exists = value
         return self
 
     async def build_remote(self, creds: Credentials) -> GoogleGroup:
+        """Create and configure the remote group, returning a ready `GoogleGroup`.
+
+        Asserts that ``email``, ``name``, ``description``, and either
+        ``settings``/``label`` or ``secure_defaults`` have been set. If
+        ``replace_if_exists`` is active, any existing group at the same address
+        is deleted first.
+
+        Raises:
+            AssertionError: if any required builder fields are missing.
+        """
         assert self._email is not None, "email() is required"
         assert self._name is not None, "name() is required"
         assert self._description is not None, "description() is required"

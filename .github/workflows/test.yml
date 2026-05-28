@@ -54,6 +54,6 @@ jobs:
               run: uv sync
 
             - name: Run integration test
-              run: uv run workspace-sync one-shot test-create-group
+              run: uv run workspace-sync one-shot test-group-lifecycle
               env:
                   CREDENTIALS_JSON: ${{ secrets.CREDENTIALS_JSON }}

@@ -1,13 +1,19 @@
 # Python-generated files
-__pycache__/
+**/__pycache__
 *.py[oc]
 build/
 dist/
 wheels/
+**/.venv
+**/*.pyz
 *.egg-info
 
 # Virtual environments
 .venv
+
+.superpowers
+docs
+logs
 
 # ── AI assistants & code tools ──────────────────────────────────────────────
 # Claude Code

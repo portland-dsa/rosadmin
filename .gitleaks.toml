@@ -1,0 +1,7 @@
+# rosadmin secret scan. Defaults on; no allowlist yet - add narrow path or regex
+# entries here only for a proven non-secret false positive (for example a
+# definitional token-name enum when the deploy path lands).
+title = "rosadmin gitleaks"
+
+[extend]
+useDefault = true

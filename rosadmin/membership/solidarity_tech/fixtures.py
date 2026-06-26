@@ -9,6 +9,16 @@ from __future__ import annotations
 from typing import Any
 
 
+def status_prop(label: str) -> list[dict[str, str]]:
+    """The membership-status select-field value carrying `label`: ``[{label, value}]``.
+
+    The decode reads the label; the value is an opaque placeholder. The single owner of
+    this select-field shape - the persona mock, the contract steps, and the decode unit
+    tests all build it here, so the wire shape cannot drift between them.
+    """
+    return [{"label": label, "value": "mock"}]
+
+
 def user_json(
     st_id: int, email: str | None, custom_props: dict[str, Any]
 ) -> dict[str, Any]:

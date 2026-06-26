@@ -32,7 +32,14 @@ def before_scenario(context, scenario) -> None:
 
 
 def after_scenario(context, scenario) -> None:
-    """Stop any respx router started during the scenario, preserving its call log."""
+    """Tear down per-scenario patches: stop any respx router and restore the
+    monkeypatched Google service builder."""
     router = getattr(context, "router", None)
     if router is not None:
         router.stop(clear=False, reset=False)
+
+    orig_build = getattr(context, "orig_build", None)
+    if orig_build is not None:
+        import rosadmin.google_group as gg
+
+        gg._build_services = orig_build

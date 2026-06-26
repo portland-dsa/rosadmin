@@ -12,7 +12,11 @@ from behave import given, when, then
 
 from rosadmin.membership.errors import DecodeError
 from rosadmin.membership.solidarity_tech.client import SolidarityTechClient
-from rosadmin.membership.solidarity_tech.fixtures import user_json, users_page
+from rosadmin.membership.solidarity_tech.fixtures import (
+    status_prop,
+    user_json,
+    users_page,
+)
 from rosadmin.membership.source import Standing
 
 BASE = "https://st.test/v1"
@@ -22,7 +26,7 @@ def _good(st_id, email="kris@example.com"):
     return user_json(
         st_id,
         email,
-        {"membership-status": [{"label": "Member in Good Standing", "value": "mock"}]},
+        {"membership-status": status_prop("Member in Good Standing")},
     )
 
 
@@ -30,7 +34,7 @@ def _retired(st_id, email="noelle@example.com"):
     return user_json(
         st_id,
         email,
-        {"membership-status": [{"label": "Lapsed Member", "value": "mock"}]},
+        {"membership-status": status_prop("Lapsed Member")},
     )
 
 

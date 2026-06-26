@@ -13,12 +13,19 @@ from typing import Any
 from rosadmin.membership.errors import DecodeError, MalformedMember
 from rosadmin.membership.source import Member, Standing
 
-#: Recognized membership-status labels. Anything else (e.g. a retired tier like
-#: "Lapsed Member") is a `DecodeError`, so the lenient sweep skips it and a
-#: targeted lookup reports it.
+#: The canonical membership-status label for each recognized standing. The single owner
+#: of these label strings: the decode reverse-maps them and the persona mock builds its
+#: records from them, so the two cannot drift.
+STANDING_LABELS: dict[Standing, str] = {
+    Standing.GOOD_STANDING: "Member in Good Standing",
+    Standing.LAPSED: "Lapsed",
+}
+
+#: Reverse of `STANDING_LABELS`. Anything not here (e.g. a retired tier like "Lapsed
+#: Member") is a `DecodeError`, so the lenient sweep skips it and a targeted lookup
+#: reports it.
 _STANDING_BY_LABEL: dict[str, Standing] = {
-    "Member in Good Standing": Standing.GOOD_STANDING,
-    "Lapsed": Standing.LAPSED,
+    label: standing for standing, label in STANDING_LABELS.items()
 }
 
 

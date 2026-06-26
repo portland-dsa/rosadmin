@@ -52,7 +52,7 @@ If you want to test the program, set one of two environment variables:
 
 After you set that environment variable, run:
 ```zsh
-uv run workspace-sync one-shot test-create-group
+uv run rosadmin one-shot test-create-group
 ```
 
 With luck, this will create a group for you, add a member, then grab the group info to print and delete the group. If this crashes after creating the group (say you forgot to enable the Cloud Identity API), it's smart enough to delete it at the start before trying again, so don't worry about doing that manually.
@@ -60,7 +60,7 @@ With luck, this will create a group for you, add a member, then grab the group i
 If you don't want to delete the test group at the end (say you want to go into the admin panel and inspect it), you can run
 
 ```zsh
-uv run workspace-sync one-shot test-create-group --no-delete-at-end
+uv run rosadmin one-shot test-create-group --no-delete-at-end
 ```
 
 Just make sure to delete the group manually if you don't want it there.

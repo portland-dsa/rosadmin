@@ -1,4 +1,4 @@
-from workspace_sync.cli import app
+from rosadmin.cli import app
 
 if __name__ == "__main__":
     app()

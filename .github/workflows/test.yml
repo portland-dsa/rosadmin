@@ -1,5 +1,5 @@
 name: CI
-run-name: "${{ github.actor }} — workspace-sync CI"
+run-name: "${{ github.actor }} — rosadmin CI"
 on:
     push:
         branches: [main]
@@ -54,6 +54,6 @@ jobs:
               run: uv sync
 
             - name: Run integration test
-              run: uv run workspace-sync one-shot test-group-lifecycle
+              run: uv run rosadmin one-shot test-group-lifecycle
               env:
                   CREDENTIALS_JSON: ${{ secrets.CREDENTIALS_JSON }}

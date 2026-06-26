@@ -17,8 +17,8 @@ from googleapiclient.errors import HttpError
 from rich import print as rprint
 from rich.rule import Rule
 
-from workspace_sync.auth import get_credentials
-from workspace_sync.google_group import GoogleGroup, GoogleGroupBuilder
+from rosadmin.auth import get_credentials
+from rosadmin.google_group import GoogleGroup, GoogleGroupBuilder
 
 one_shot_app = App(
     name="one-shot", help="Throwaway commands for development and manual testing."

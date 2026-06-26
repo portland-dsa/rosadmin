@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Runs the live API suites before a push, so live verification gates the push WITHOUT CI
+# ever holding a credential (CI runs only the offline mock suites). Skip a
+# work-in-progress push with `git push --no-verify`.
+#
+# One-time install (per clone):  git config core.hooksPath scripts/hooks
+#
+# Live credentials are read from the environment, or from a local .env if present
+# (set -a exports each assignment). With neither, the hook is a no-op, so it never
+# blocks a push it cannot meaningfully gate (a fresh clone, or CI).
+set -euo pipefail
+
+if [ -f .env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./.env
+  set +a
+fi
+
+have_google=false
+for name in CREDENTIALS_JSON CREDENTIALS_FILE CREDENTIALS_PATH; do
+  if [ -n "${!name:-}" ]; then
+    have_google=true
+  fi
+done
+
+if [ "$have_google" = false ] && [ -z "${SOLIDARITY_TECH_TOKEN:-}" ]; then
+  echo "pre-push: no live credentials present; skipping live suites" >&2
+  exit 0
+fi
+
+echo "pre-push: running live suites (use 'git push --no-verify' to skip)..."
+
+if [ "$have_google" = true ]; then
+  uv run rosadmin one-shot test-group-lifecycle
+fi
+
+# Live behave suites are gated by the @live tag and the environment.py credential
+# check. With no @live scenarios yet this is a no-op pass; it activates as they land.
+uv run behave --tags=@live
+
+echo "pre-push: live suites passed"

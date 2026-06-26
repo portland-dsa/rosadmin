@@ -75,3 +75,5 @@ CLAUDE.*.md
 
 # macOS
 .DS_Store
+# Local live credentials for the pre-push hook
+.env

@@ -50,3 +50,7 @@ testpaths = ["tests/unit"]
 
 [tool.pyright]
 reportMissingModuleSource = "none"
+# scripts/rosadmin_deploy is a standalone uv project: it depends on che-deploya, which lives in
+# its own venv, not this one. It carries its own [tool.pyright] (Linux platform) and is checked
+# against its own environment - so keep it out of the application's type-check pass here.
+exclude = ["**/.venv", "**/__pycache__", "**/node_modules", "**/.*", "scripts/rosadmin_deploy"]

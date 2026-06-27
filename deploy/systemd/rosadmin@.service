@@ -1,0 +1,60 @@
+[Unit]
+Description=rosadmin web service (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+WorkingDirectory=/opt/rosadmin/%i/current
+# Boot-time integrity: verify the extracted tree against the manifest the build
+# emitted, from WorkingDirectory where MANIFEST.sha256 lives. A mismatch aborts the
+# start before the service runs. The tree is read-only and the service user cannot
+# write it, so this is tamper-evidence and drift detection, not a barrier against root.
+ExecStartPre=/usr/bin/sha256sum -c --quiet --strict MANIFEST.sha256
+ExecStart=/opt/rosadmin/%i/current/python/bin/python3 -m rosadmin serve --host 127.0.0.1 --port 8000
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Per-instance User=/Group= and any future config live in the matching
+# rosadmin@<instance>.service.d/override.conf drop-in.
+
+TimeoutStartSec=60
+WatchdogSec=30
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# --- sandbox (validate on the box: systemd-analyze security rosadmin@staging) -------
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateUsers=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+UMask=0077
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# sd_notify uses an AF_UNIX datagram socket; AF_INET/AF_INET6 are the HTTP listener.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# MemoryDenyWriteExecute is deliberately NOT set yet: cryptography's cffi callbacks
+# (reachable via google-auth RS256, once credentials are added) may need W^X relaxed.
+# Validate on the box before enabling. No credentials are loaded yet.
+
+[Install]
+WantedBy=multi-user.target

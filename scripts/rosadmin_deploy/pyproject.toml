@@ -1,0 +1,23 @@
+[project]
+name = "rosadmin-deploy"
+version = "0.1.0"
+description = "Provision and deploy the rosadmin service on the shared box."
+requires-python = ">=3.11"
+dependencies = ["che-deploya"]
+scripts = { rosadmin-deploy = "rosadmin_deploy.cli:main" }
+
+
+[tool.uv]
+# Not a wheel: `uv sync` just gives a dev venv with cyclopts to run/test against.
+package = false
+
+[tool.uv.sources]
+che-deploya = { git = "https://github.com/portland-dsa/che-deploya", tag = "v0.2.0" }
+
+[tool.pyright]
+# We develop on Windows but target the Linux box - tell the type checker the platform so the
+# POSIX-only stdlib (os.geteuid, pwd, grp) resolves with autocomplete and no warnings. Analysis
+# only; the runtime code still imports those lazily, box-side. Pylance picks this up when
+# scripts/rosadmin_deploy is opened as a workspace folder.
+pythonPlatform = "Linux"
+pythonVersion = "3.12"

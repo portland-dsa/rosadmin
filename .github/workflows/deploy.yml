@@ -1,0 +1,65 @@
+# Build the relocatable artifact once on merge to main, then deploy it to staging.
+# CI holds no runtime credentials; it reaches the box only as a short-lived tagged
+# ephemeral Tailscale node, talking to the shell-less deploy-rosadmin-staging user
+# whose login identity is itself the staging boundary. There is no production job
+# yet - production is added after staging is well exercised.
+name: deploy
+on:
+    push:
+        branches: [main]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+            - name: Install uv
+              uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+              with:
+                  version: "0.11.16"
+            - name: Build relocatable artifact
+              run: bash scripts/build_artifact.sh
+            - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              with:
+                  name: rosadmin-${{ github.sha }}
+                  path: dist/rosadmin-${{ github.sha }}.tar.gz
+                  if-no-files-found: error
+
+    deploy-staging:
+        needs: build
+        environment: staging # holds TS_OAUTH_* , DEPLOY_HOST, DEPLOY_SSH_KEY
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+              with:
+                  name: rosadmin-${{ github.sha }}
+                  path: ./artifact
+            - uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
+              with:
+                  oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+                  oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+                  tags: tag:ci-deploy
+            - name: ship + activate + smoke check
+              env:
+                  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}       # deploy-rosadmin-staging@<box-tailscale-name>
+                  DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }} # private key; pubkey is the deploy user's forced-command key
+              run: |
+                  set -euo pipefail
+                  SHA="${{ github.sha }}"
+                  install -d -m 700 ~/.ssh
+                  printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+                  chmod 600 ~/.ssh/deploy_key
+                  ssh=(ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new)
+                  TAR="artifact/rosadmin-$SHA.tar.gz"
+                  DIGEST="$(sha256sum "$TAR" | cut -d' ' -f1)"
+                  "${ssh[@]}" "$DEPLOY_HOST" "upload $SHA $DIGEST" < "$TAR"
+                  "${ssh[@]}" "$DEPLOY_HOST" "activate $SHA"
+                  for i in $(seq 1 30); do
+                    if [ "$("${ssh[@]}" "$DEPLOY_HOST" is-active)" = active ]; then echo ok; exit 0; fi
+                    sleep 5
+                  done
+                  echo "staging did not become active" >&2; exit 1

@@ -1,0 +1,5 @@
+# Shell scripts and git hooks run on Linux (CI and the deploy box) but may be
+# checked out on Windows. Force LF so a CRLF interpreter line never breaks them.
+scripts/hooks/* text eol=lf
+deploy/bin/*    text eol=lf
+*.sh            text eol=lf

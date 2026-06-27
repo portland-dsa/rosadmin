@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "rosadmin"
 version = "0.1.0"
@@ -34,6 +38,12 @@ rosadmin = "rosadmin.cli:app"
 
 [tool.uv]
 package = true
+
+# Package only the application; the repo root also holds non-package dirs (deploy/, scripts/,
+# tests/, docs/), and setuptools' flat-layout auto-discovery would otherwise refuse the build
+# on seeing more than one top-level candidate.
+[tool.setuptools.packages.find]
+include = ["rosadmin*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]

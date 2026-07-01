@@ -12,7 +12,7 @@ WorkingDirectory=/opt/rosadmin/%i/current
 # start before the service runs. The tree is read-only and the service user cannot
 # write it, so this is tamper-evidence and drift detection, not a barrier against root.
 ExecStartPre=/usr/bin/sha256sum -c --quiet --strict MANIFEST.sha256
-ExecStart=/opt/rosadmin/%i/current/python/bin/python3 -m rosadmin serve --host 127.0.0.1 --port 8000
+ExecStart=/opt/rosadmin/%i/current/python/bin/python3 -m rosadmin serve --host 127.0.0.1 --port ${ROSADMIN_PORT}
 Environment=PYTHONDONTWRITEBYTECODE=1
 # Per-instance User=/Group= and any future config live in the matching
 # rosadmin@<instance>.service.d/override.conf drop-in.

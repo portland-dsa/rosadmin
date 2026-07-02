@@ -1,0 +1,73 @@
+# Build the frontend static-site release artifact once on merge to main, then deploy
+# it to staging. CI holds no runtime credentials; it reaches the box only as a
+# short-lived tagged ephemeral Tailscale node, talking to the shell-less
+# deploy-rosadmin-frontend-staging user whose forced command is itself the staging boundary.
+# There is no production job yet - production is added after staging is well exercised.
+name: deploy-frontend
+on:
+    push:
+        branches: [main]
+        # Only redeploy the frontend when an input to its artifact changes; an
+        # unrelated push to main (backend, docs) creates no run at all.
+        paths:
+            - "frontend/**"
+            - "scripts/frontend/**"
+            - ".github/workflows/deploy-frontend.yml"
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    build:
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/checkout@v6
+            - name: Install Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version-file: frontend/.nvmrc
+                  cache: npm
+                  cache-dependency-path: frontend/package-lock.json
+            - name: Build release artifact
+              run: bash scripts/frontend/build_artifact.sh
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: frontend-${{ github.sha }}
+                  path: dist/frontend-${{ github.sha }}.tar.gz
+                  if-no-files-found: error
+
+    deploy-staging:
+        needs: build
+        environment: Frontend Staging # holds TS_OAUTH_*, DEPLOY_HOST, DEPLOY_SSH_KEY
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/download-artifact@v4
+              with:
+                  name: frontend-${{ github.sha }}
+                  path: ./artifact
+            - uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
+              with:
+                  oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+                  oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+                  tags: tag:ci-deploy
+            - name: ship + activate + smoke check
+              env:
+                  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}       # deploy-rosadmin-frontend-staging@<box-tailscale-name>
+                  DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }} # private key; pubkey is the deploy user's forced-command key
+              run: |
+                  set -euo pipefail
+                  SHA="${{ github.sha }}"
+                  install -d -m 700 ~/.ssh
+                  printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+                  chmod 600 ~/.ssh/deploy_key
+                  ssh=(ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new)
+                  TAR="artifact/frontend-$SHA.tar.gz"
+                  DIGEST="$(sha256sum "$TAR" | cut -d' ' -f1)"
+                  "${ssh[@]}" "$DEPLOY_HOST" "upload $SHA $DIGEST" < "$TAR"
+                  "${ssh[@]}" "$DEPLOY_HOST" "activate $SHA"
+                  # activate's swap is an atomic symlink rename with no service to
+                  # restart, so one is-active check is a direct read of what activate
+                  # just did, not a poll waiting on something else's rollout - no loop.
+                  if [ "$("${ssh[@]}" "$DEPLOY_HOST" is-active)" = active ]; then echo ok; exit 0; fi
+                  echo "staging did not become active" >&2; exit 1

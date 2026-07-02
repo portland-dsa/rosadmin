@@ -1,0 +1,74 @@
+[Unit]
+Description=Caddy web server (public ingress)
+Documentation=https://caddyserver.com/docs/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=caddy
+Group=caddy
+WorkingDirectory=/var/lib/caddy
+ExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile
+# admin off (Caddyfile) means there is no admin API for `caddy reload` to
+# reach, so this unit has no ExecReload. Config changes ship via
+# `systemctl restart caddy` (condition 1's single change-channel).
+# Caddy resolves its ACME/cert storage under $XDG_DATA_HOME/caddy; pinning it here
+# means storage always lands under the single ReadWritePaths entry below, regardless
+# of how (or whether) the caddy user's HOME is provisioned.
+Environment=XDG_DATA_HOME=/var/lib/caddy
+
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+
+# Bind 80/443 without root. CAP_NET_ADMIN, which upstream's own unit also
+# grants, is intentionally left out: this deployment never needs it (no raw
+# sockets, no routing/interface manipulation), and the bounding set should hold
+# only what is actually used.
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+# --- sandbox (validate on the box: systemd-analyze security caddy) -----------
+# Mirrors deploy/systemd/rosadmin@.service, with one deliberate divergence:
+# PrivateUsers is NOT set here. A user namespace strips the effective
+# CAP_NET_BIND_SERVICE the ambient set above grants for binding the host's
+# privileged ports 80/443, so with PrivateUsers=true Caddy would start but
+# fail to bind and the service would loop-crash. Every other directive matches
+# the template.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RemoveIPC=true
+UMask=0077
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+# AF_UNIX for sd_notify and (later) the proxy-to-backend socket; AF_INET/
+# AF_INET6 for the public HTTP(S) listeners and the ACME HTTP-01 challenge.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Caddy's ACME account state and certificates are the only thing it must
+# write; everything else - /etc/caddy/Caddyfile, the served static tree under
+# /opt - stays read-only under ProtectSystem=strict. XDG_DATA_HOME above
+# pins Caddy's storage to /var/lib/caddy/caddy, so this single path covers it.
+ReadWritePaths=/var/lib/caddy
+# MemoryDenyWriteExecute is deliberately NOT set yet, mirroring the rosadmin
+# template's own deferral: validate on the box before enabling.
+
+[Install]
+WantedBy=multi-user.target

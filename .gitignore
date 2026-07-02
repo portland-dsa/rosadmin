@@ -11,6 +11,11 @@ wheels/
 # Virtual environments
 .venv
 
+# Node / frontend toolchain (fine-grained set in frontend/.gitignore)
+node_modules/
+dist-ssr/
+*.local
+
 .superpowers
 docs
 logs

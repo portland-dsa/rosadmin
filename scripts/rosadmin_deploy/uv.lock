@@ -13,8 +13,8 @@ wheels = [
 
 [[package]]
 name = "che-deploya"
-version = "0.2.0"
-source = { git = "https://github.com/portland-dsa/che-deploya?tag=v0.2.0#ce878e16b766d41c73feba505751fae882f294ed" }
+version = "0.3.0"
+source = { git = "https://github.com/portland-dsa/che-deploya?tag=v0.3.0#f8063dc4984e15d496db5d40edd2f9a3cd41896a" }
 dependencies = [
     { name = "cyclopts" },
 ]
@@ -101,11 +101,11 @@ wheels = [
 
 [[package]]
 name = "rosadmin-deploy"
-version = "0.1.0"
+version = "0.1.1"
 source = { virtual = "." }
 dependencies = [
     { name = "che-deploya" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "che-deploya", git = "https://github.com/portland-dsa/che-deploya?tag=v0.2.0" }]
+requires-dist = [{ name = "che-deploya", git = "https://github.com/portland-dsa/che-deploya?tag=v0.3.0" }]

@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+#
+# deploy-wrapper - the ONLY command the frontend deploy keys may run.
+#
+# Installed at /opt/rosadmin-frontend/bin/deploy-wrapper (root-owned, mode 0755) and pinned as
+# the forced command in each deploy user's authorized_keys and in sshd's ForceCommand.
+# Three verbs - `upload <sha> <sha256>`, `activate <sha>`, `is-active` - and nothing
+# else. The target ENVIRONMENT comes from the connecting user's identity, never an
+# argument, so a staging key has no way to name production.
+set -euo pipefail
+set -f   # no globbing before we word-split $SSH_ORIGINAL_COMMAND
+
+case "$(id -un)" in
+  deploy-rosadmin-frontend-staging)    instance=staging ;;
+  deploy-rosadmin-frontend-prod) instance=production ;;
+  *) echo "denied" >&2; exit 1 ;;
+esac
+
+root="/opt/rosadmin-frontend/$instance"
+releases="$root/releases"
+current="$root/current"
+max_bytes=$((100 * 1024 * 1024))   # a static bundle is small; generous but bounded
+                                    # (the backend's venv cap is 300MB - an interpreter
+                                    # plus wheels is a bigger, different kind of artifact)
+
+set -- ${SSH_ORIGINAL_COMMAND:-}
+action="${1:-}"
+
+is_sha()    { [[ "${1:-}" =~ ^[0-9a-f]{40}$ ]]; }
+is_sha256() { [[ "${1:-}" =~ ^[0-9a-f]{64}$ ]]; }
+
+case "$action" in
+
+  # upload <sha> <sha256> : stream the release tarball in on stdin, size-check it, and
+  # verify its content digest (computed by CI) BEFORE it is stored - so a corrupt or
+  # oversized stream can never become a runnable release.
+  upload)
+    sha="${2:-}";  is_sha "$sha"     || { echo "bad sha" >&2; exit 2; }
+    want="${3:-}"; is_sha256 "$want" || { echo "bad digest" >&2; exit 2; }
+
+    dest="$releases/$sha"
+    install -d -m 0755 "$dest"
+    tmp="$(mktemp "$dest/.upload.XXXXXX")"
+    trap 'rm -f "$tmp"' EXIT
+    cat > "$tmp"
+    [ "$(stat -c %s "$tmp")" -le "$max_bytes" ] || { echo "upload too large" >&2; exit 2; }
+    got="$(sha256sum "$tmp" | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || { echo "digest mismatch" >&2; exit 2; }
+    mv -f "$tmp" "$dest/frontend.tar.gz"
+    trap - EXIT
+    echo "uploaded $sha to $instance"
+    ;;
+
+  # activate <sha> : extract the verified tarball under a jailed path, freeze it
+  # read-only, and point `current` at it. No restart - see below.
+  activate)
+    sha="${2:-}"; is_sha "$sha" || { echo "bad sha" >&2; exit 2; }
+    tar="$releases/$sha/frontend.tar.gz"
+    [ -f "$tar" ] || { echo "no such release" >&2; exit 2; }
+    tree="$releases/$sha/tree"
+
+    # Jail extraction: refuse any member that is absolute or escapes via `..`, so a
+    # verified-but-malicious tarball cannot write outside the release directory. The
+    # sha256 gate proves the bytes; this proves the layout.
+    if tar -tzf "$tar" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+      echo "unsafe tar member" >&2; exit 2
+    fi
+
+    # Veto symlink OR hard-link members BEFORE extraction too: without this, a crafted
+    # tarball could write THROUGH a symlink to a target outside the release tree during
+    # the extraction itself, or alias an existing inode via a hard link, closing that
+    # window. A built static bundle has no legitimate reason to contain either kind of
+    # link. The verbose listing's mode field marks symlinks with a leading `l` and hard
+    # links with a leading `h`.
+    if tar -tvzf "$tar" | grep -Eq '^[lh]'; then
+      echo "symlink or hard-link member in archive" >&2; exit 2
+    fi
+
+    rm -rf "$tree"; install -d -m 0755 "$tree"
+    tar -xzf "$tar" -C "$tree" --no-same-owner
+
+    # Backstop: reject ANY extracted symlink, full stop, in case one slipped past the
+    # pre-extraction veto above. A built static bundle has no legitimate reason to
+    # contain one - unlike the backend's relocatable venv, which needs internal links
+    # to survive - so we do not bother resolving targets; presence alone is unsafe.
+    if find "$tree" -type l -print -quit | grep -q .; then
+      echo "unsafe symlink in release" >&2; rm -rf "$tree"; exit 2
+    fi
+
+    # Freeze read-only. `a-w` removes only write bits, leaving read/execute intact, so
+    # the tree stays world-readable - Caddy runs as a DIFFERENT, non-root user and reads
+    # these files as "other". Static assets are public by definition; there is nothing
+    # here to hide from that read.
+    chmod -R a-w "$tree"
+
+    # Atomic symlink swap: build the new link beside the old one, then rename over it.
+    ln -sfn "$tree/frontend" "$current.new"
+    mv -Tf "$current.new" "$current"
+
+    # No privileged action here, unlike the backend. Caddy serves whatever `current`
+    # points at, live - there is no service to restart, so this identity needs no
+    # sudoers entry at all.
+    echo "activated $sha on $instance"
+    ;;
+
+  # is-active : report whether a built release is actually live (needs no privilege).
+  is-active)
+    [ -r "$current/index.html" ] && echo "active" || echo "inactive"
+    ;;
+
+  *)
+    echo "denied" >&2; exit 1
+    ;;
+
+esac

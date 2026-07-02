@@ -1,0 +1,923 @@
+:root {
+  --red: #cf2027;
+  --red-dark: #a4191f;
+  --teal: #14756e;
+  --teal-dark: #0e5a55;
+  --teal-tint: #e6f1ef;
+  --leader: #bd8710;
+  --leader-ink: #876008;
+  --ink: #211f1a;
+  --muted: #615e54;
+  --faint: #928e80;
+  --paper: #f1ead9;
+  --card: #fffdf6;
+  --band: #e9e0cb;
+  --line: #221f1a;
+  --line-soft: #d8cfb8;
+  --green: #1c7038;
+  --green-bg: #e6f1e3;
+  --shadow: 2px 2px 0 rgba(33, 31, 26, 0.13);
+  --shadow-soft: 2px 2px 0 rgba(33, 31, 26, 0.1);
+  --radius: 5px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: 'Inter', -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- PageHeader ------------------------------------------------- */
+.pageheader {
+  border-bottom: 3px solid var(--line);
+}
+.pageheader__inner {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.pageheader__star {
+  color: var(--red);
+  font-size: 20px;
+}
+.pageheader__wordmark {
+  font-family: 'Fraunces Variable', Georgia, serif;
+  font-weight: 700;
+  font-size: 20px;
+}
+.pageheader__signin {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.pageheader__signin b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* ---- page (shared) --------------------------------------------- */
+.page {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 16px;
+}
+
+/* ---- toolbar (sticky header: tabs + title + search + add slot) -- */
+.toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--paper); /* masks rows scrolling under it */
+  margin: 0 -16px; /* bleed past page padding so card shadows don't peek */
+  padding: 8px 16px 4px;
+}
+.toolbar__row {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+
+/* mobile group title (above the bar); hidden on desktop */
+.toolbar__titlemobile {
+  display: none;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 0 2px 12px;
+}
+.toolbar__eyebrow {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--faint);
+  font-weight: 600;
+}
+.toolbar__count {
+  margin-left: auto;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: right;
+}
+.toolbar__count b {
+  color: var(--ink);
+}
+
+/* ---- GroupPick (group name AS a dropdown; both title copies) --- */
+.grouppick {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.grouppick:not(.grouppick--single) {
+  cursor: pointer;
+  border: 1.5px solid var(--line-soft);
+  border-radius: 7px;
+  padding: 3px 10px;
+  background: var(--card);
+  box-shadow: var(--shadow-soft);
+}
+.grouppick:not(.grouppick--single):hover {
+  border-color: var(--line);
+}
+.grouppick__name {
+  margin: 0;
+  font-family: 'Fraunces Variable', Georgia, serif;
+  font-weight: 700;
+  font-size: 24px;
+  line-height: 1.1;
+}
+.grouppick__caret {
+  font-size: 15px;
+  color: var(--muted);
+  line-height: 1;
+  flex: 0 0 auto;
+}
+.grouppick__select {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  font: inherit;
+  border: none;
+}
+
+/* ---- SearchBar (desktop: tabs + title row over the input row) -- */
+.searchbar {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: transparent;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    'tabs title'
+    'row row';
+  align-items: end;
+}
+.searchbar__tabs {
+  grid-area: tabs;
+  display: inline-flex;
+  border: 1.5px solid var(--line);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: var(--band);
+  overflow: hidden;
+}
+.searchbar__tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-weight: 600;
+  font-size: 13px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  padding: 8px 16px;
+  cursor: pointer;
+}
+.searchbar__tab + .searchbar__tab {
+  border-left: 1.5px solid var(--line);
+}
+.searchbar__tab.is-active {
+  background: var(--card);
+  color: var(--ink);
+}
+.searchbar--add .searchbar__tab--add.is-active {
+  color: var(--teal);
+}
+
+/* desktop title tucked beside the tabs */
+.searchbar__title {
+  grid-area: title;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 4px 5px;
+}
+.searchbar__eyebrow {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+  font-weight: 600;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.searchbar__title .grouppick__name {
+  font-size: 20px;
+  min-width: 220px;
+  max-width: 26ch; /* fixed-ish so switching groups doesn't shift; long names ellipsize */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.searchbar__count {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.searchbar__count b {
+  color: var(--ink);
+}
+
+.searchbar__form {
+  grid-area: row;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  border: 1.5px solid var(--line);
+  border-radius: 0 6px 6px 6px;
+  background: var(--card);
+  box-shadow: var(--shadow);
+  padding: 8px;
+}
+.searchbar__input {
+  flex: 1;
+  min-width: 0;
+  border: 1.5px solid var(--line);
+  border-radius: 5px;
+  padding: 9px 12px;
+  font: inherit;
+  font-size: 15px;
+  background: var(--card);
+  color: var(--ink);
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease;
+}
+.searchbar__input:focus {
+  outline: 2px solid var(--red);
+  outline-offset: 1px;
+}
+.searchbar__go {
+  flex: 0 0 auto;
+  font: inherit;
+  font-weight: 700;
+  font-size: 14px;
+  border-radius: 5px;
+  padding: 9px 18px;
+  cursor: pointer;
+  white-space: nowrap;
+  min-width: 80px;
+  text-align: center; /* fixed width so it doesn't shift on Filter<->Add */
+  border: 1.5px solid var(--line);
+  background: var(--band);
+  color: var(--ink);
+}
+.searchbar__go:hover {
+  background: #ded3b8;
+}
+.searchbar--add .searchbar__input {
+  background: var(--teal-tint);
+  border-color: var(--teal);
+}
+.searchbar--add .searchbar__input:focus {
+  outline-color: var(--teal);
+}
+.searchbar--add .searchbar__go {
+  background: var(--teal);
+  color: #fff;
+  border-color: var(--teal-dark);
+}
+.searchbar--add .searchbar__go:hover {
+  background: var(--teal-dark);
+}
+
+/* ---- AddSlot (reserved right column: confirm + hint + messages) - */
+.addslot {
+  flex: 0 0 290px;
+  align-self: stretch;
+}
+.addslot__hit {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  height: 100%;
+  justify-content: center;
+  border: 1.5px dashed var(--teal);
+  background: var(--teal-tint);
+  border-radius: var(--radius);
+  padding: 9px 11px;
+  box-shadow: var(--shadow-soft);
+}
+.addslot__hittop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.addslot__mark {
+  font-size: 17px;
+  color: #b9b09a;
+  flex: 0 0 auto;
+}
+.addslot__name {
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.addslot__add {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font: inherit;
+  font-weight: 700;
+  font-size: 13px;
+  background: var(--teal);
+  color: #fff;
+  border: 1.5px solid var(--teal-dark);
+  border-radius: 5px;
+  padding: 7px 14px;
+  cursor: pointer;
+}
+.addslot__add:hover {
+  background: var(--teal-dark);
+}
+.addslot__email {
+  font-size: 12.5px;
+  color: var(--faint);
+  word-break: break-all;
+  margin-left: 25px;
+}
+.addslot__placeholder {
+  display: flex;
+  align-items: center;
+  text-align: left;
+  height: 100%;
+  border: 1.5px dashed var(--line-soft);
+  border-radius: var(--radius);
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 10px 12px;
+  min-height: 56px;
+  box-shadow: var(--shadow-soft); /* gives the placeholder a finished, padded look */
+}
+.addslot__placeholder b {
+  color: var(--teal);
+}
+
+/* a transient message in the add slot: icon + text + countdown bar */
+.addslot__msg {
+  position: relative;
+  overflow: hidden;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  border: 1.5px dashed var(--line-soft);
+  background: transparent; /* warnings stay faded, like the hint card */
+  border-radius: var(--radius);
+  padding: 9px 12px;
+  box-shadow: var(--shadow-soft);
+  font-size: 12.5px;
+  color: var(--muted);
+  line-height: 1.35;
+}
+.addslot__msgtext b {
+  color: var(--ink);
+}
+.addslot__msg--good {
+  border-color: var(--green);
+  border-style: dashed;
+  background: var(--card);
+  color: #13502a;
+  font-weight: 600;
+} /* success is its own settled state */
+.addslot__msg--good .addslot__msgtext b {
+  color: #13502a;
+}
+.addslot__msgicon {
+  flex: 0 0 auto;
+  font-size: 14px;
+  margin-right: 8px;
+  line-height: 1;
+}
+.addslot__msg--good .addslot__msgicon {
+  color: var(--green);
+}
+.addslot__msg:not(.addslot__msg--good) .addslot__msgicon {
+  color: #9c6b00;
+}
+.addslot__bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 3px;
+  width: 100%;
+  background: var(--muted);
+  transform-origin: left;
+  animation: deplete 4.5s linear forwards; /* matches MSG_MS in useGroupAdmin.ts */
+}
+.addslot__msg--good .addslot__bar {
+  background: var(--green);
+}
+
+/* ---- active filter --------------------------------------------- */
+.activefilter {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 2px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+.activefilter b {
+  color: var(--ink);
+}
+.activefilter__clear {
+  font: inherit;
+  font-weight: 600;
+  font-size: 12.5px;
+  padding: 5px 11px;
+  border: 1.5px solid var(--line);
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+}
+.activefilter__clear:hover {
+  background: var(--band);
+}
+
+/* ---- MemberGrid + MemberCard (less-compact 2-row cards) -------- */
+.member-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(252px, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.member-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 9px;
+  row-gap: 7px;
+  align-items: start;
+  background: var(--card);
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 13px;
+  box-shadow: var(--shadow-soft);
+  overflow: hidden;
+}
+.member-card--you {
+  border-color: var(--red);
+  box-shadow: 2px 2px 0 rgba(207, 32, 39, 0.2);
+}
+.member-card--added {
+  border-color: var(--green);
+  box-shadow: 2px 2px 0 rgba(28, 112, 56, 0.2);
+}
+.member-card__mark {
+  grid-column: 1;
+  grid-row: 1;
+  font-size: 18px;
+  line-height: 1.2;
+}
+.member-card__mark--leader {
+  color: var(--leader);
+}
+.member-card__mark--member {
+  color: #b9b09a;
+}
+.member-card__body {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+}
+.member-card__name {
+  font-weight: 600;
+  font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
+}
+.member-card__email {
+  font-size: 12.5px;
+  color: var(--faint);
+  word-break: break-all;
+  margin-top: 2px;
+}
+.member-card__action {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  align-items: center;
+}
+.member-card__you {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: var(--red);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.member-card__added {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--green);
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+.member-card__role {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--leader-ink);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.member-card__lock {
+  font-size: 11px;
+}
+.member-card__remove {
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px 6px;
+  text-decoration: underline;
+  text-decoration-color: var(--line-soft);
+}
+.member-card__remove:hover {
+  color: var(--red);
+}
+
+/* ---- tombstone (in-place "removed" overlay) -------------------- */
+.member-card--removing > .member-card__mark,
+.member-card--removing > .member-card__body,
+.member-card--removing > .member-card__action {
+  opacity: 0.25;
+}
+.tombstone {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: rgba(245, 240, 228, 0.88);
+}
+.tombstone__label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.tombstone__undo {
+  font: inherit;
+  font-weight: 700;
+  font-size: 13.5px;
+  cursor: pointer;
+  background: var(--red);
+  color: #fff;
+  border: 1.5px solid var(--red-dark);
+  border-radius: 5px;
+  padding: 8px 18px;
+  box-shadow: var(--shadow-soft);
+}
+.tombstone__undo:hover {
+  background: var(--red-dark);
+}
+.tombstone__bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 4px;
+  width: 100%;
+  background: var(--red);
+  transform-origin: left;
+  animation: deplete 6s linear forwards; /* matches UNDO_MS in useGroupAdmin.ts */
+}
+@keyframes deplete {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+@keyframes slideInTop {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.member-card--enter {
+  animation: slideInTop 0.25s ease-out both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tombstone__bar,
+  .addslot__bar {
+    animation: none;
+    opacity: 0.5;
+  }
+  .member-card--enter {
+    animation: none;
+  }
+}
+
+.empty {
+  padding: 22px 4px;
+  color: var(--muted);
+}
+
+/* ---- LoginScreen ----------------------------------------------- */
+.login {
+  display: flex;
+  min-height: 100dvh;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.login__card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+  padding: 36px 40px;
+  background: var(--card);
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.login__star {
+  color: var(--red);
+  font-size: 34px;
+}
+.login__wordmark {
+  margin: 0;
+  font-family: 'Fraunces Variable', Georgia, serif;
+  font-weight: 700;
+  font-size: 30px;
+}
+.login__blurb {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: var(--muted);
+}
+.login__button {
+  font: inherit;
+  font-weight: 700;
+  padding: 11px 22px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius);
+  background: #5865f2;
+  color: #fff;
+  cursor: pointer;
+}
+
+/* ---- Footer ---------------------------------------------------- */
+.footer {
+  margin-top: 40px;
+  border-top: 3px solid var(--line);
+}
+.footer__inner {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.footer__link {
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  text-decoration: none;
+}
+.footer__link:hover {
+  color: var(--ink);
+}
+.footer__logout {
+  margin-left: auto;
+  font: inherit;
+  font-size: 13px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.footer__logout:hover {
+  color: var(--red);
+}
+
+/* ---- loading + status ------------------------------------------ */
+.loading {
+  display: flex;
+  min-height: 100dvh;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+}
+.status {
+  margin: 12px 2px;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+.status--bad {
+  color: var(--red-dark);
+}
+
+/* ---- mobile ---------------------------------------------------- */
+@media (max-width: 560px) {
+  .pageheader__wordmark {
+    font-size: 18px;
+  }
+  .pageheader__signin {
+    font-size: 12px;
+  }
+  .pageheader__inner {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  /* swap which title copy shows */
+  .toolbar__titlemobile {
+    display: flex;
+  }
+  .searchbar__title {
+    display: none;
+  }
+
+  /* one-row bar: |Filter|Add| input |button| */
+  .searchbar {
+    display: flex;
+    align-items: stretch;
+    border: 1.5px solid var(--line);
+    border-radius: 6px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .searchbar__tabs {
+    border: none;
+    border-radius: 0;
+    border-right: 1.5px solid var(--line);
+    background: transparent;
+    flex: 0 0 auto;
+  }
+  .searchbar__tab {
+    padding: 0 11px;
+    font-size: 12.5px;
+    background: var(--band);
+  }
+  .searchbar__tab.is-active {
+    background: var(--card);
+  }
+  .searchbar__form {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 6px;
+    gap: 6px;
+  }
+  .searchbar__go {
+    padding: 9px 13px;
+  }
+
+  /* The add slot becomes an ephemeral overlay just below the pinned bar:
+     out of flow (so it never resizes the bar) and pinned-adjacent. */
+  .toolbar__row {
+    flex-direction: column;
+    gap: 0;
+  }
+  .addslot {
+    position: absolute;
+    top: 100%;
+    left: 16px;
+    right: 16px;
+    z-index: 25;
+    flex: none;
+    align-self: auto;
+    min-height: 0;
+    margin: 0;
+  }
+  .addslot__placeholder {
+    display: none; /* no overlay when idle */
+  }
+  .addslot__hit {
+    height: auto;
+    box-shadow: 4px 4px 0 rgba(33, 31, 26, 0.22);
+  }
+
+  /* messages -> distinct colored notification bars */
+  .addslot__msg {
+    height: auto;
+    margin: 0;
+    padding: 10px 12px;
+    border-style: solid;
+    border-radius: 6px;
+    box-shadow: 4px 4px 0 rgba(33, 31, 26, 0.22);
+  }
+  .addslot__msg--good {
+    background: var(--green-bg);
+    border-color: var(--green);
+    color: #13502a;
+  }
+  .addslot__msg:not(.addslot__msg--good) {
+    background: #fbf0d6;
+    border-color: #d9a93b;
+    color: #6a4d07;
+  }
+  .addslot__msg:not(.addslot__msg--good) .addslot__bar {
+    background: #c08a14;
+  }
+
+  /* roster -> one framed list of tight rows */
+  .member-grid {
+    grid-template-columns: 1fr;
+    gap: 0;
+    margin-top: 12px;
+    border: 1.5px solid var(--line);
+    border-radius: 6px;
+    overflow: hidden;
+    background: var(--card);
+    box-shadow: var(--shadow-soft);
+  }
+  .member-card {
+    grid-template-columns: auto 1fr auto;
+    column-gap: 11px;
+    row-gap: 0;
+    align-items: center;
+    border: none;
+    border-radius: 0;
+    border-bottom: 1px solid var(--line-soft);
+    box-shadow: none;
+    padding: 12px 13px;
+  }
+  .member-card:last-child {
+    border-bottom: none;
+  }
+  .member-card__action {
+    grid-column: 3;
+    grid-row: 1;
+    justify-self: end;
+  }
+  .member-card--you,
+  .member-card--added {
+    box-shadow: none;
+    border-color: transparent;
+  }
+  .member-card--you {
+    background: #fdf3f2;
+  }
+  .member-card--added {
+    background: var(--green-bg);
+  }
+  .member-card__remove {
+    border: 1.5px solid var(--line);
+    border-radius: 5px;
+    background: var(--card);
+    padding: 9px 14px;
+    text-decoration: none;
+    color: var(--ink);
+  }
+  .member-card__remove:hover {
+    color: var(--red);
+  }
+  .tombstone__undo {
+    padding: 12px 22px;
+  }
+  .activefilter__clear {
+    padding: 9px 14px;
+  }
+}

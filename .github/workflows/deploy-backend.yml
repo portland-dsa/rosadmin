@@ -3,10 +3,18 @@
 # ephemeral Tailscale node, talking to the shell-less deploy-rosadmin-staging user
 # whose login identity is itself the staging boundary. There is no production job
 # yet - production is added after staging is well exercised.
-name: deploy
+name: deploy-backend
 on:
     push:
         branches: [main]
+        # Only redeploy the backend when an input to its artifact changes; an
+        # unrelated push to main (frontend, docs) creates no run at all.
+        paths:
+            - "rosadmin/**"
+            - "pyproject.toml"
+            - "uv.lock"
+            - "scripts/build_artifact.sh"
+            - ".github/workflows/deploy-backend.yml"
     workflow_dispatch:
 
 permissions:
@@ -16,7 +24,7 @@ jobs:
     build:
         runs-on: ubuntu-24.04
         steps:
-            - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+            - uses: actions/checkout@v6
             - name: Install uv
               uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
               with:
@@ -34,7 +42,7 @@ jobs:
         environment: staging # holds TS_OAUTH_* , DEPLOY_HOST, DEPLOY_SSH_KEY
         runs-on: ubuntu-24.04
         steps:
-            - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+            - uses: actions/download-artifact@v4
               with:
                   name: rosadmin-${{ github.sha }}
                   path: ./artifact

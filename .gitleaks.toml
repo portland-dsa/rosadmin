@@ -1,6 +1,9 @@
 # rosadmin secret scan. Defaults on; no allowlist yet - add narrow path or regex
 # entries here only for a proven non-secret false positive (for example a
-# definitional token-name enum when the deploy path lands).
+# definitional token-name enum when the deploy path lands). The default ruleset
+# scans the whole tree, frontend/ included; the node toolchain's build artifacts
+# stay out of scope by being gitignored (never committed), so neither toolchain
+# needs a carve-out here.
 title = "rosadmin gitleaks"
 
 [extend]

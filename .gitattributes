@@ -2,4 +2,11 @@
 # checked out on Windows. Force LF so a CRLF interpreter line never breaks them.
 scripts/hooks/* text eol=lf
 deploy/bin/*    text eol=lf
+deploy/bin/frontend/* text eol=lf
+deploy/caddy/*  text eol=lf
 *.sh            text eol=lf
+
+# The frontend node version file is read on the Linux CI runner and by
+# contributors' version managers. Force LF so a Windows editor cannot commit a
+# stray CRLF into it, independent of anyone's core.autocrlf setting.
+frontend/.nvmrc text eol=lf

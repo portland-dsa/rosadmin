@@ -3,9 +3,9 @@ from __future__ import annotations
 import pytest
 
 from rosadmin.membership.errors import DecodeError, MalformedMember
-from rosadmin.membership.source import Standing
 from rosadmin.membership.solidarity_tech.decode import decode_user
 from rosadmin.membership.solidarity_tech.fixtures import status_prop, user_json
+from rosadmin.membership.source import Standing
 
 
 def test_good_standing_decodes():

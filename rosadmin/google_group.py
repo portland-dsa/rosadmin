@@ -36,20 +36,21 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Optional
 
+from tenacity import retry, retry_if_exception, stop_after_delay, wait_fixed
+
 from googleapiclient import discovery
 from googleapiclient.errors import HttpError
-from tenacity import retry, retry_if_exception, stop_after_delay, wait_fixed
 
 if TYPE_CHECKING:
     from google.oauth2.service_account import Credentials
     from googleapiclient._apis.admin.directory_v1 import DirectoryResource, Group
     from googleapiclient._apis.cloudidentity.v1 import (
         CloudIdentityResource,
-        Group as CiGroup,
     )
+    from googleapiclient._apis.cloudidentity.v1 import Group as CiGroup
+    from googleapiclient._apis.groupssettings.v1 import Groups as SettingsGroup
     from googleapiclient._apis.groupssettings.v1 import (
         GroupssettingsResource,
-        Groups as SettingsGroup,
     )
 
 logger = logging.getLogger(__name__)

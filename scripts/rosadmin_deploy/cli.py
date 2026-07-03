@@ -5,13 +5,13 @@ There are no secrets or database yet - staging answers
 files.
 """
 
-from che_deploya import (
-    DeploySpec,
-    Component,
-    StaticUnit,
-    Stages,
-)
 import che_deploya
+from che_deploya import (
+    Component,
+    DeploySpec,
+    Stages,
+    StaticUnit,
+)
 
 SPEC = DeploySpec(
     root="rosadmin",

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import pytest
 from dataclasses import FrozenInstanceError
 
-from rosadmin.membership.source import Member, MembershipSource, Standing
+import pytest
+
 from rosadmin.membership.errors import DecodeError, MalformedMember, MembershipError
+from rosadmin.membership.source import Member, MembershipSource, Standing
 
 
 def test_member_is_frozen_and_carries_standing():

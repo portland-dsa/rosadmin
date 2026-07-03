@@ -45,6 +45,16 @@ package = true
 [tool.setuptools.packages.find]
 include = ["rosadmin*"]
 
+# Import order: __future__, stdlib, third-party, the google-api family as its
+# own cluster, then first-party - blank line between blocks. Matches black.
+[tool.isort]
+profile = "black"
+py_version = 313
+skip_gitignore = true
+known_first_party = ["rosadmin"]
+sections = ["FUTURE", "STDLIB", "THIRDPARTY", "GOOGLE", "FIRSTPARTY", "LOCALFOLDER"]
+known_google = ["google", "googleapiclient", "google_auth_oauthlib", "google_auth_httplib2"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]
 

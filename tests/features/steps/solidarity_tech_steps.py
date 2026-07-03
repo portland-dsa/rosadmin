@@ -8,7 +8,7 @@ import asyncio
 
 import httpx
 import respx
-from behave import given, when, then
+from behave import given, then, when
 
 from rosadmin.membership.errors import DecodeError
 from rosadmin.membership.solidarity_tech.client import SolidarityTechClient

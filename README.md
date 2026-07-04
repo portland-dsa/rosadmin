@@ -86,6 +86,22 @@ uv run behave
 
 Add the `--tags live` if you have a key and want to run any tests that hit an actual server somewhere. The pre-push commit hooks run the live tests, you can push with `--no-verify` if you haven't been given them.
 
+If you're a front-end dev developing against the backend:
+
+`zsh|bash|etc`:
+```zsh
+ROSADMIN_FAKE_LOGIN=1 uv run rosadmin serve
+```
+
+`powershell`
+```pwsh
+$env:ROSADMIN_FAKE_LOGIN="1"; uv run rosadmin serve
+```
+
+This enables the fake login entry-point for developing against for test purposes. Note: to test anything significant you'll need a DWD-enabled service account key for some sort of (ideally) isolated staging workspace account hierarchy.
+
+**Second Note** if you're running the SPA from Vite's dev server, you probably want a proxy entry `server.proxy: { "/api": "https:/127.0.0.1:8000" }` so it behaves just like a real ~~boy~~ deployment. Otherwise you'll get weird CORS issues since the requests aren't proxied like they are on the live box.
+
 # Questions You Could Theoretically Ask
 
 1. Why `rosadmin`?

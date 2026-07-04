@@ -1,10 +1,10 @@
-# Public ingress for the co-hosted box.
-
+# Public ingress for the co-hosted box: global policy here, one site file
+# per stage under sites/.
 {
 	# The admin API's default localhost:2019 listener is a
 	# network control plane that can live-reprogram routing outside any
 	# file/group permission model. Turn it off entirely; config changes
-	# ship by editing this file and running `systemctl restart caddy`
+	# ship through provisioning and `systemctl restart caddy`
 	# (see the matching note in deploy/caddy/caddy.service).
 	admin off
 
@@ -13,40 +13,7 @@
 	email info@portlanddsa.org
 }
 
-rosadmin.staging.portlanddsa.org {
-	# The CSP is a same-origin baseline for
-	# a Vite SPA with no cross-origin calls yet (the build is mock-backed
-	# and there is no reverse_proxy in this file). img-src/font-src allow
-	# `data:` because Vite inlines small images/fonts that way; script-src
-	# stays at the 'self' default (no 'unsafe-inline'/'unsafe-eval'). This
-	# still needs a browser-validation pass against the served build before
-	# production - watch the console for CSP violations - and connect-src
-	# is added once the backend API lands.
-	header {
-		Strict-Transport-Security "max-age=31536000"
-		X-Content-Type-Options "nosniff"
-		Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data:; font-src 'self' data:"
-		# Not load-bearing security, just noise reduction.
-		-Server
-	}
-
-	# JSON access log to the default sink (stderr -> journald), for
-	# CrowdSec's crowdsecurity/caddy collection to consume.
-	log {
-		format json
-	}
-
-	# trusted_proxies is deliberately not configured. Caddy
-	# is the true edge (no CDN in front of it), so the connecting peer it
-	# observes on the socket is the real client; a trusted_proxies entry
-	# would instead make it trust a client-supplied X-Forwarded-For /
-	# X-Real-IP, which would let an attacker forge an innocent IP into the
-	# log and CrowdSec's ban list, or hide their own from both.
-
-	root * /opt/rosadmin-frontend/staging/current
-	file_server
-
-	# No reverse_proxy yet: the backend has no HTTP API beyond /api/healthz and
-	# this build is mock-backed. API routing is added here once the
-	# backend exposes real routes.
-}
+# Deliberately a relative path: provisioning validates a staged copy of this
+# whole tree, and a relative import makes that copy self-contained - an
+# absolute path would quietly validate the live files instead.
+import sites/*.caddy

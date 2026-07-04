@@ -23,7 +23,10 @@ def _listen_target(env: Mapping[str, str]) -> int | None:
 
     systemd's convention: LISTEN_PID names the intended recipient and
     inherited fds start at 3. The PID check keeps a stray inherited
-    environment from hijacking a child process's listener.
+    environment from hijacking a child process's listener. Exactly one
+    inherited socket is assumed - the socket unit declares a single
+    ListenStream, and any extra fds would sit unserved, so adding a second
+    listener means changing this function, not just the unit.
     """
     if env.get("LISTEN_PID") != str(os.getpid()):
         return None
@@ -52,9 +55,29 @@ def serve(
     import uvicorn
 
     fd = _listen_target(os.environ)
+    if fd is None and uds is None and "NOTIFY_SOCKET" in os.environ:
+        # Under systemd with no inherited socket, falling back to TCP would
+        # quietly recreate the local port the socket unit exists to remove,
+        # behind a service that still reports healthy. Refuse loudly.
+        raise SystemExit(
+            "running under systemd but no socket fd was inherited; "
+            "refusing the TCP fallback (check LISTEN_PID/LISTEN_FDS delivery)"
+        )
+    # Forwarded headers are trusted only on unix-socket listeners. On the
+    # inherited fd that trust is structural: the socket unit declares 0660
+    # and the ingress group, so the reverse proxy is the only possible peer.
+    # A bare --uds socket is a development convenience. Identity comes from the session
+    # cookie on every path. On TCP, uvicorn's loopback-only default stands.
     if fd is not None:
-        uvicorn.run("rosadmin.service:app", fd=fd)
+        logging.info("listener: inherited socket fd %d", fd)
+        uvicorn.run(
+            "rosadmin.service:app", fd=fd, proxy_headers=True, forwarded_allow_ips="*"
+        )
     elif uds is not None:
-        uvicorn.run("rosadmin.service:app", uds=uds)
+        logging.info("listener: unix socket %s", uds)
+        uvicorn.run(
+            "rosadmin.service:app", uds=uds, proxy_headers=True, forwarded_allow_ips="*"
+        )
     else:
+        logging.info("listener: http://%s:%d (local development)", host, port)
         uvicorn.run("rosadmin.service:app", host=host, port=port)

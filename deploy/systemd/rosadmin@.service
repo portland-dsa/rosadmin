@@ -1,7 +1,12 @@
 [Unit]
 Description=rosadmin web service (%i)
-After=network-online.target
+After=network-online.target rosadmin@%i.socket
 Wants=network-online.target
+# The API listener is the socket unit's inherited fd; a bare restart of this
+# service (the deploy wrapper's one privileged action) pulls the socket up
+# with it, and the socket surviving service restarts is what removes the
+# connection-refused window.
+Requires=rosadmin@%i.socket
 
 [Service]
 Type=notify
@@ -12,7 +17,9 @@ WorkingDirectory=/opt/rosadmin/%i/current
 # start before the service runs. The tree is read-only and the service user cannot
 # write it, so this is tamper-evidence and drift detection, not a barrier against root.
 ExecStartPre=/usr/bin/sha256sum -c --quiet --strict MANIFEST.sha256
-ExecStart=/opt/rosadmin/%i/current/python/bin/python3 -m rosadmin serve --host 127.0.0.1 --port ${ROSADMIN_PORT}
+# No listener flags: serve takes the fd systemd inherited it. The host/port
+# form exists for bare local development only.
+ExecStart=/opt/rosadmin/%i/current/python/bin/python3 -m rosadmin serve
 Environment=PYTHONDONTWRITEBYTECODE=1
 # Per-instance User=/Group= and any future config live in the matching
 # rosadmin@<instance>.service.d/override.conf drop-in.
@@ -50,7 +57,8 @@ AmbientCapabilities=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
-# sd_notify uses an AF_UNIX datagram socket; AF_INET/AF_INET6 are the HTTP listener.
+# sd_notify and the inherited API listener are AF_UNIX; AF_INET/AF_INET6
+# remain for outbound calls (the Google APIs, once credentials land).
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 # MemoryDenyWriteExecute is deliberately NOT set yet: cryptography's cffi callbacks
 # (reachable via google-auth RS256, once credentials are added) may need W^X relaxed.

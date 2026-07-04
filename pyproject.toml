@@ -33,13 +33,25 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "respx>=0.23.1",
+    "rosadmin-devtools",
 ]
+
+# The development-only surface (persona stubs, fake-login), installed on staging as
+# well as in dev. Production installs neither this group nor the package - the hard
+# half of the fake-login double gate.
+staging = ["rosadmin-devtools"]
 
 [project.scripts]
 rosadmin = "rosadmin.cli:app"
 
 [tool.uv]
 package = true
+
+[tool.uv.sources]
+rosadmin-devtools = { workspace = true }
+
+[tool.uv.workspace]
+members = ["devtools"]
 
 # Package only the application; the repo root also holds non-package dirs (deploy/, scripts/,
 # tests/, docs/), and setuptools' flat-layout auto-discovery would otherwise refuse the build
@@ -53,7 +65,7 @@ include = ["rosadmin*"]
 profile = "black"
 py_version = 313
 skip_gitignore = true
-known_first_party = ["rosadmin"]
+known_first_party = ["rosadmin", "rosadmin_devtools"]
 sections = ["FUTURE", "STDLIB", "THIRDPARTY", "GOOGLE", "FIRSTPARTY", "LOCALFOLDER"]
 known_google = ["google", "googleapiclient", "google_auth_oauthlib", "google_auth_httplib2"]
 
@@ -63,6 +75,9 @@ asyncio_mode = "auto"
 
 [tool.pyright]
 reportMissingModuleSource = "none"
+# rosadmin_devtools is its own workspace package under devtools/, not a root-level
+# package, so add that directory to the type checker's import search path.
+extraPaths = ["devtools"]
 # scripts/rosadmin_deploy is a standalone uv project: it depends on che-deploya, which lives in
 # its own venv, not this one. It carries its own [tool.pyright] (Linux platform) and is checked
 # against its own environment - so keep it out of the application's type-check pass here.

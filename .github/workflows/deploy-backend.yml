@@ -11,6 +11,7 @@ on:
         # unrelated push to main (frontend, docs) creates no run at all.
         paths:
             - "rosadmin/**"
+            - "devtools/**"
             - "pyproject.toml"
             - "uv.lock"
             - "scripts/build_artifact.sh"
@@ -30,7 +31,7 @@ jobs:
               with:
                   version: "0.11.16"
             - name: Build relocatable artifact
-              run: bash scripts/build_artifact.sh
+              run: bash scripts/build_artifact.sh staging
             - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
               with:
                   name: rosadmin-${{ github.sha }}

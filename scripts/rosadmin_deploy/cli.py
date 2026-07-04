@@ -1,7 +1,7 @@
 """The rosadmin deploy spec: what the shared box installs for the service.
 
 There are no secrets or database yet - staging answers
-`/healthz` and needs neither - so the component is just the two systemd unit
+`/api/healthz` and needs neither - so the component is just the two systemd unit
 files.
 """
 

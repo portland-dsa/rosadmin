@@ -13,7 +13,7 @@ WorkingDirectory=/var/lib/caddy
 ExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile
 # admin off (Caddyfile) means there is no admin API for `caddy reload` to
 # reach, so this unit has no ExecReload. Config changes ship via
-# `systemctl restart caddy` (condition 1's single change-channel).
+# `systemctl restart caddy` - one deliberate change-channel, not two.
 # Caddy resolves its ACME/cert storage under $XDG_DATA_HOME/caddy; pinning it here
 # means storage always lands under the single ReadWritePaths entry below, regardless
 # of how (or whether) the caddy user's HOME is provisioned.

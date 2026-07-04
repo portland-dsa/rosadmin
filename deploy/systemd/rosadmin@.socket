@@ -1,0 +1,18 @@
+[Unit]
+Description=rosadmin API socket (%i)
+
+[Socket]
+ListenStream=/run/rosadmin/%i/api.sock
+# The parent directories are created at socket start when absent.
+DirectoryMode=0755
+# The 0660 owner/group pair is 100% of the access: the service user owns
+# the socket, and the ingress group holds only the reverse proxy and the
+# service user. No other local principal can connect.
+SocketUser=rosadmin-%i
+SocketGroup=rosadmin-ingress-%i
+SocketMode=0660
+# Unlink the inode on stop so an unclean exit never leaves a stale socket.
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

@@ -1,10 +1,13 @@
 # Shell scripts and git hooks run on Linux (CI and the deploy box) but may be
 # checked out on Windows. Force LF so a CRLF interpreter line never breaks them.
 scripts/hooks/* text eol=lf
-deploy/bin/*    text eol=lf
-deploy/bin/frontend/* text eol=lf
-deploy/caddy/*  text eol=lf
 *.sh            text eol=lf
+
+# Everything under deploy/ lands on the Linux box byte-for-byte - unit files
+# and caddy config ship from a workstation checkout via provisioning, so a
+# CRLF working tree would ship CRLF to systemd and caddy. Force LF recursively
+# (the old per-directory globs missed new subdirectories like caddy/sites/).
+deploy/** text eol=lf
 
 # The frontend node version file is read on the Linux CI runner and by
 # contributors' version managers. Force LF so a Windows editor cannot commit a

@@ -16,6 +16,7 @@ from rosadmin.membership.solidarity_tech.decode import STANDING_LABELS
 from rosadmin.membership.solidarity_tech.fixtures import status_prop
 from rosadmin.membership.solidarity_tech.fixtures import user_json as _user_json
 from rosadmin.membership.source import Standing
+from rosadmin.mock_st.cast import identity_for
 
 #: Base for a persona's synthetic Discord snowflake, so `discord-user-id` reads as a
 #: plausible 18-digit id, deterministic in the record's ST id.
@@ -56,8 +57,15 @@ class Persona(Enum):
         props: dict[str, Any] = {"discord-user-id": str(_DISCORD_ID_BASE + st_id)}
         if self is not Persona.NO_STATUS:
             props["membership-status"] = status_prop(self._label())
-        first, last = _fixture_name(email)
-        return _user_json(st_id, email, props, first_name=first, last_name=last)
+        ident = identity_for(email)
+        return _user_json(
+            st_id,
+            email,
+            props,
+            first_name=ident.first_name,
+            last_name=ident.last_name,
+            alternate_name=ident.alternate_name,
+        )
 
     def _label(self) -> str:
         """The membership-status label this persona's record carries."""
@@ -68,12 +76,6 @@ class Persona(Enum):
             # A label no tier has ever used -> decode raises the unknown error.
             return "Certified Kromer Holder"
         return STANDING_LABELS[_STANDING_BY_PERSONA[self]]
-
-
-def _fixture_name(email: str) -> tuple[str, str]:
-    """A deterministic fabricated (first, last) name from the email's local part."""
-    local = email.partition("@")[0]
-    return (local.capitalize(), "Lightner")
 
 
 #: The recognized standing each decoding persona resolves to. Keeps the

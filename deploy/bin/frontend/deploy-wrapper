@@ -76,6 +76,10 @@ case "$action" in
       echo "symlink or hard-link member in archive" >&2; exit 2
     fi
 
+    # A prior activation of this sha froze its tree read-only below, which also
+    # strips this user's power to unlink inside it - thaw before clearing so a
+    # re-run of the same release is idempotent instead of thousands of rm errors.
+    if [ -e "$tree" ]; then chmod -R u+w "$tree"; fi
     rm -rf "$tree"; install -d -m 0755 "$tree"
     tar -xzf "$tar" -C "$tree" --no-same-owner
 

@@ -9,6 +9,12 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class ApiModel(BaseModel):
+    """Base for every contract model: field docstrings become OpenAPI descriptions."""
+
+    model_config = ConfigDict(use_attribute_docstrings=True)
+
+
 class Role(StrEnum):
     """A member's standing within one group."""
 
@@ -16,7 +22,7 @@ class Role(StrEnum):
     MEMBER = "member"
 
 
-class Member(BaseModel):
+class Member(ApiModel):
     """The searchable projection of a member in good standing."""
 
     id: UUID
@@ -35,7 +41,7 @@ class GroupMember(Member):
     """The member's role in the *group* (leader or member)"""
 
 
-class GroupSummary(BaseModel):
+class GroupSummary(ApiModel):
     """A group as named in the session overview. This is a lighter-weight Group without Membership Data"""
 
     id: UUID
@@ -59,7 +65,7 @@ class Group(GroupSummary):
     """The members (and leaders) in this Group."""
 
 
-class MeResponse(BaseModel):
+class MeResponse(ApiModel):
     """Who is logged in and what they manage."""
 
     display_name: str
@@ -68,21 +74,21 @@ class MeResponse(BaseModel):
     """A list of all Groups (that the logged in leader manages) this member belongs to or leads."""
 
 
-class SearchRequest(BaseModel):
+class SearchRequest(ApiModel):
     """Exact-email member search. POST keeps the address out of URLs and logs."""
 
     email: str
     """Their *primary membership email*."""
 
 
-class SearchHit(BaseModel):
+class SearchHit(ApiModel):
     """The one search outcome that discloses a record: an addable member."""
 
     status: Literal["good_standing"]
     member: Member
 
 
-class SearchMiss(BaseModel):
+class SearchMiss(ApiModel):
     """Every no-record outcome, distinguished so the leader knows who to ask.
 
     Extras are forbidden: a miss must never carry a member object, so it can
@@ -103,14 +109,14 @@ class SearchMiss(BaseModel):
 SearchResponse = Annotated[Union[SearchHit, SearchMiss], Field(discriminator="status")]
 
 
-class AddMemberRequest(BaseModel):
+class AddMemberRequest(ApiModel):
     """Add one member (by our UUID) to the path's group."""
 
     member_id: UUID
     """The member's unique ID. This will never change, even if a new membership records platform is chosen."""
 
 
-class FakeLoginRequest(BaseModel):
+class FakeLoginRequest(ApiModel):
     """Development/staging login: impersonate a named persona."""
 
     persona: str

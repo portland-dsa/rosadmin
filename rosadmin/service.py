@@ -95,4 +95,16 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
     return app
 
 
+def contract_schema() -> dict[str, object]:
+    """The published OpenAPI contract: the app assembled with the dev surface off.
+
+    Dev-only routes (fake-login) are excluded, so the committed artifact is the
+    stable surface the frontend builds against. Regenerate with
+    `scripts/dump_openapi.py`.
+    """
+    return create_app(
+        WebSettings(fake_login_enabled=False, allowed_origin=None)
+    ).openapi()
+
+
 app = create_app()

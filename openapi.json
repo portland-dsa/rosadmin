@@ -1,0 +1,557 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "FastAPI",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/healthz": {
+      "get": {
+        "summary": "Healthz",
+        "operationId": "healthz_api_healthz_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object",
+                  "title": "Response Healthz Api Healthz Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me": {
+      "get": {
+        "summary": "Me",
+        "operationId": "me_api_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/me/groups": {
+      "get": {
+        "summary": "My Groups",
+        "operationId": "my_groups_api_me_groups_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Group"
+                  },
+                  "type": "array",
+                  "title": "Response My Groups Api Me Groups Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/members/search": {
+      "post": {
+        "summary": "Search Members",
+        "operationId": "search_members_api_members_search_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/SearchHit"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SearchMiss"
+                    }
+                  ],
+                  "title": "Response Search Members Api Members Search Post",
+                  "discriminator": {
+                    "propertyName": "status",
+                    "mapping": {
+                      "good_standing": "#/components/schemas/SearchHit",
+                      "dues_expired": "#/components/schemas/SearchMiss",
+                      "no_membership_status": "#/components/schemas/SearchMiss",
+                      "malformed": "#/components/schemas/SearchMiss",
+                      "not_found": "#/components/schemas/SearchMiss"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/groups/{group_id}/members": {
+      "post": {
+        "summary": "Add Member",
+        "operationId": "add_member_api_groups__group_id__members_post",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The group's unique ID.",
+              "title": "Group Id"
+            },
+            "description": "The group's unique ID."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddMemberRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GroupMember"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/groups/{group_id}/members/{member_id}": {
+      "delete": {
+        "summary": "Remove Member",
+        "operationId": "remove_member_api_groups__group_id__members__member_id__delete",
+        "parameters": [
+          {
+            "name": "group_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The group's unique ID.",
+              "title": "Group Id"
+            },
+            "description": "The group's unique ID."
+          },
+          {
+            "name": "member_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "description": "The member's unique ID within that group.",
+              "title": "Member Id"
+            },
+            "description": "The member's unique ID within that group."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/begin": {
+      "get": {
+        "summary": "Begin",
+        "operationId": "begin_api_auth_begin_get",
+        "responses": {
+          "501": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/callback": {
+      "get": {
+        "summary": "Callback",
+        "operationId": "callback_api_auth_callback_get",
+        "responses": {
+          "501": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "summary": "Logout",
+        "operationId": "logout_api_auth_logout_post",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AddMemberRequest": {
+        "properties": {
+          "member_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Member Id",
+            "description": "The member's unique ID. This will never change, even if a new membership records platform is chosen."
+          }
+        },
+        "type": "object",
+        "required": [
+          "member_id"
+        ],
+        "title": "AddMemberRequest",
+        "description": "Add one member (by our UUID) to the path's group."
+      },
+      "Group": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "Unique ID for that group. Will never be recycled, even if a WG disbands and restarts, the new one will have a new ID"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The group's name, without the suffix. For instance 'Steering Committee' is {'name': 'steering'}\nThis is an open set, do not rely on values being consistent or predictable."
+          },
+          "body_type": {
+            "type": "string",
+            "title": "Body Type",
+            "description": "The group's type, without the name. For instance 'Steering Committee' is {'body_type': 'committee'}\nThis is an open set, do not rely on values being consistent or predictable."
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/GroupMember"
+            },
+            "type": "array",
+            "title": "Members",
+            "description": "The members (and leaders) in this Group."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "body_type",
+          "members"
+        ],
+        "title": "Group",
+        "description": "One group the session's leader manages, members included."
+      },
+      "GroupMember": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "Unique ID for the member. This will never change, even if we switch our membership records backend"
+          },
+          "full_name": {
+            "type": "string",
+            "title": "Full Name",
+            "description": "The member's full name, as derived by Solidarity Tech (note: preferred name is used over first name where applicable)"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "The member's official email. Note, if their alternate email is a Gmail while their official one isn't, the account \nwith access may not match the one displayed!"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "description": "The member's role in the *group* (leader or member)"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "full_name",
+          "email",
+          "role"
+        ],
+        "title": "GroupMember",
+        "description": "One row of a group's member list."
+      },
+      "GroupSummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "Unique ID for that group. Will never be recycled, even if a WG disbands and restarts, the new one will have a new ID"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "The group's name, without the suffix. For instance 'Steering Committee' is {'name': 'steering'}\nThis is an open set, do not rely on values being consistent or predictable."
+          },
+          "body_type": {
+            "type": "string",
+            "title": "Body Type",
+            "description": "The group's type, without the name. For instance 'Steering Committee' is {'body_type': 'committee'}\nThis is an open set, do not rely on values being consistent or predictable."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "body_type"
+        ],
+        "title": "GroupSummary",
+        "description": "A group as named in the session overview. This is a lighter-weight Group without Membership Data"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "MeResponse": {
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "title": "Display Name",
+            "description": "This user's display name, as of now, always the same as their \"full name\" if queried as a member."
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/GroupSummary"
+            },
+            "type": "array",
+            "title": "Groups",
+            "description": "A list of all Groups (that the logged in leader manages) this member belongs to or leads."
+          }
+        },
+        "type": "object",
+        "required": [
+          "display_name",
+          "groups"
+        ],
+        "title": "MeResponse",
+        "description": "Who is logged in and what they manage."
+      },
+      "Member": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id",
+            "description": "Unique ID for the member. This will never change, even if we switch our membership records backend"
+          },
+          "full_name": {
+            "type": "string",
+            "title": "Full Name",
+            "description": "The member's full name, as derived by Solidarity Tech (note: preferred name is used over first name where applicable)"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "The member's official email. Note, if their alternate email is a Gmail while their official one isn't, the account \nwith access may not match the one displayed!"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "full_name",
+          "email"
+        ],
+        "title": "Member",
+        "description": "The searchable projection of a member in good standing."
+      },
+      "Role": {
+        "type": "string",
+        "enum": [
+          "leader",
+          "member"
+        ],
+        "title": "Role",
+        "description": "A member's standing within one group."
+      },
+      "SearchHit": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "good_standing",
+            "title": "Status"
+          },
+          "member": {
+            "$ref": "#/components/schemas/Member"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "member"
+        ],
+        "title": "SearchHit",
+        "description": "The one search outcome that discloses a record: an addable member."
+      },
+      "SearchMiss": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "dues_expired",
+              "no_membership_status",
+              "malformed",
+              "not_found"
+            ],
+            "title": "Status",
+            "description": "`dues_expired`: known lapsed. \n`no_membership_status`: the backend has the email but no standing at all (may not be a member). \n`malformed`: a member-shaped record in a definitely-broken state. \n`not_found`: no record."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "SearchMiss",
+        "description": "Every no-record outcome, distinguished so the leader knows who to ask.\n\nExtras are forbidden: a miss must never carry a member object, so it can\nnever be mistaken for a hit."
+      },
+      "SearchRequest": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "title": "Email",
+            "description": "Their *primary membership email*."
+          }
+        },
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "title": "SearchRequest",
+        "description": "Exact-email member search. POST keeps the address out of URLs and logs."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

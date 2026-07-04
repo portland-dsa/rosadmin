@@ -31,6 +31,7 @@ dev = [
     "isort>=8.0.1",
     "pyright>=1.1.411",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "respx>=0.23.1",
 ]
 
@@ -58,6 +59,7 @@ known_google = ["google", "googleapiclient", "google_auth_oauthlib", "google_aut
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit"]
+asyncio_mode = "auto"
 
 [tool.pyright]
 reportMissingModuleSource = "none"

@@ -53,6 +53,27 @@ def test_personas_decode_to_their_intended_states():
         decode_user(Persona.MALFORMED.user_json(4, "spamton@example.com"))
 
 
+def test_new_personas_decode_to_their_intended_states():
+    # LEADER is an ordinary good-standing record to today's decoder; NO_STATUS and
+    # UNKNOWN_TIER raise the decode errors a lenient sweep skips.
+    assert (
+        decode_user(Persona.LEADER.user_json(5, "ralsei@example.com")).standing
+        is Standing.GOOD_STANDING
+    )
+    with pytest.raises(DecodeError):
+        decode_user(Persona.NO_STATUS.user_json(6, "berdly@example.com"))
+    with pytest.raises(DecodeError):
+        decode_user(Persona.UNKNOWN_TIER.user_json(7, "spamton@example.com"))
+
+
+def test_records_carry_names_and_discord_id():
+    record = Persona.GOOD_STANDING.user_json(1, "kris@example.com")
+    assert record["first_name"] == "Kris"
+    assert record["last_name"] == "Dreemurr"
+    assert record["alternate_name"] is None
+    assert record["custom_user_properties"]["discord-user-id"] == "900000000000000001"
+
+
 def test_create_app_builds_a_fastapi_app():
     from fastapi import FastAPI
 

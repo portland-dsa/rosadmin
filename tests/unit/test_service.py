@@ -13,7 +13,7 @@ def test_healthz_returns_ok():
         async with httpx.AsyncClient(
             transport=transport, base_url="http://test"
         ) as client:
-            return await client.get("/healthz")
+            return await client.get("/api/healthz")
 
     resp = asyncio.run(_call())
     assert resp.status_code == 200

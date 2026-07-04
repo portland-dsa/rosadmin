@@ -25,12 +25,12 @@ one_shot_app = App(
     name="one-shot", help="Throwaway commands for development and manual testing."
 )
 
-TEST_GROUP_EMAIL = "i-made-a-test-group@portlanddsa.org"
+TEST_GROUP_EMAIL = "i-made-a-test-group@pdx-dsa.org"
 TEST_GROUP_NAME = "A stupid Script Test Group"
 TEST_GROUP_DESCRIPTION = "A stupid test security group"
-TEST_MEMBER_EMAIL = "info@portlanddsa.org"
+TEST_MEMBER_EMAIL = "admin@pdx-dsa.org"
 #: The Workspace user the service account impersonates for these test commands.
-TEST_IMPERSONATION_SUBJECT = "info@portlanddsa.org"
+TEST_IMPERSONATION_SUBJECT = "admin@pdx-dsa.org"
 
 
 @one_shot_app.command(name="test-group-lifecycle")

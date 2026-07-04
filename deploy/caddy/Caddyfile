@@ -46,7 +46,7 @@ rosadmin.staging.portlanddsa.org {
 	root * /opt/rosadmin-frontend/staging/current
 	file_server
 
-	# No reverse_proxy yet: the backend has no HTTP API beyond /healthz and
+	# No reverse_proxy yet: the backend has no HTTP API beyond /api/healthz and
 	# this build is mock-backed. API routing is added here once the
 	# backend exposes real routes.
 }

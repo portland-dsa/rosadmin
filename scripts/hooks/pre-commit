@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Keep the committed OpenAPI contract (openapi.json) in step with the code. When a
+# contract input is part of the commit, regenerate the artifact; if the committed
+# copy was stale, the regenerated file differs and the commit is blocked until the
+# refresh is staged. Skip a work-in-progress commit with `git commit --no-verify`.
+#
+# One-time install (per clone):  git config core.hooksPath scripts/hooks
+#
+# CI enforces the same invariant independently (the OpenAPI contract test in the
+# pytest step), so a skipped hook still cannot land a stale contract on a PR.
+set -euo pipefail
+
+# Only worth regenerating when a contract input is actually in this commit.
+if ! git diff --cached --name-only \
+  | grep -Eq '^(rosadmin/web/.*\.py|rosadmin/service\.py|openapi\.json)$'; then
+  exit 0
+fi
+
+uv run python scripts/dump_openapi.py
+
+if ! git diff --quiet -- openapi.json; then
+  echo "pre-commit: openapi.json was stale; regenerated it." >&2
+  echo "pre-commit: run 'git add openapi.json' and commit again." >&2
+  exit 1
+fi

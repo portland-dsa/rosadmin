@@ -20,12 +20,27 @@ def status_prop(label: str) -> list[dict[str, str]]:
 
 
 def user_json(
-    st_id: int, email: str | None, custom_props: dict[str, Any]
+    st_id: int,
+    email: str | None,
+    custom_props: dict[str, Any],
+    *,
+    first_name: str | None = None,
+    last_name: str | None = None,
+    alternate_name: str | None = None,
 ) -> dict[str, Any]:
-    """One `/users` user object; `email=None` emits a null email (a malformed record)."""
+    """One `/users` user object; `email=None` emits a null email (a malformed record).
+
+    `first_name`/`last_name`/`alternate_name` are the built-in top-level name
+    fields. `alternate_name` is a chosen name: when present it is what to display
+    in place of `first_name` (which may be a legal or dead name). rosadmin does not
+    decode names yet - they ride the wire for staging fidelity.
+    """
     return {
         "id": st_id,
         "email": email,
+        "first_name": first_name,
+        "last_name": last_name,
+        "alternate_name": alternate_name,
         "phone_number": None,
         "custom_user_properties": custom_props,
     }

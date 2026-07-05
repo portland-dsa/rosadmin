@@ -51,7 +51,8 @@ jobs:
               run: uv run behave --tags="not @live"
 
             - name: Pytest (unit)
-              # No container runtime in this job: exclude the integration suite.
+              # The integration suite runs in the sibling "Integration" job, which
+              # has a container runtime; this job stays offline.
               run: uv run pytest -m "not integration"
 
             - name: gitleaks
@@ -59,3 +60,28 @@ jobs:
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+    integration:
+        name: Integration (real Postgres)
+        runs-on: ubuntu-24.04
+
+        steps:
+            - uses: actions/checkout@v6
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+              with:
+                  version: "0.11.16"
+                  enable-cache: true
+
+            - name: Install Python
+              run: uv python install
+
+            - name: Install dependencies (including dev)
+              run: uv sync --locked --dev
+
+            - name: Pytest (integration; ephemeral Postgres via testcontainers)
+              # ubuntu runners ship Docker, so testcontainers boots a throwaway
+              # postgres:18 - the database is never mocked. Its also credential-free so no
+              # secret, just a disposable container.
+              run: uv run pytest -m integration

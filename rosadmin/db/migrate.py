@@ -12,11 +12,12 @@ rather than serving a half-migrated schema.
 from __future__ import annotations
 
 import importlib.resources
-import pathlib
 from collections.abc import Mapping
 from urllib.parse import quote
 
 from yoyo import get_backend, read_migrations
+
+from rosadmin.credentials import read_credential
 
 
 def migrations_path() -> str:
@@ -54,20 +55,18 @@ def _migrate_password(env: Mapping[str, str]) -> str:
     """The migration role's scram password: a systemd credential on the box, an
     env var in dev.
 
-    Read from `$CREDENTIALS_DIRECTORY/db_migration_password` when present, else
-    `ROSADMIN_DB_MIGRATE_PASSWORD`. Surrounding whitespace is stripped so a
-    credential file written with a trailing newline still matches the stored
-    scram verifier. The password is never logged.
+    Read through the shared [`read_credential`] from
+    `$CREDENTIALS_DIRECTORY/db_migration_password` or
+    `ROSADMIN_DB_MIGRATE_PASSWORD`. Stripping there keeps a credential file's
+    trailing newline from diverging from the stored scram verifier. The password
+    is never logged.
     """
-    creds = env.get("CREDENTIALS_DIRECTORY")
-    if creds:
-        path = pathlib.Path(creds) / "db_migration_password"
-        if path.exists():
-            return path.read_text(encoding="utf-8").strip()
-    raw = env.get("ROSADMIN_DB_MIGRATE_PASSWORD")
-    if raw is None or not raw.strip():
+    password = read_credential(
+        env, "db_migration_password", "ROSADMIN_DB_MIGRATE_PASSWORD"
+    )
+    if password is None:
         raise RuntimeError("database migration password is not configured")
-    return raw.strip()
+    return password
 
 
 def migrate_uri_from_env(env: Mapping[str, str]) -> str:

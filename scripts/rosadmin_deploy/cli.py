@@ -13,15 +13,35 @@ environment's upstream in one place, so whoever can write it holds routing
 power over all of them.
 """
 
+from enum import StrEnum
+
 import che_deploya
 from che_deploya import (
     Check,
     Component,
     DeploySpec,
+    Secret,
     SharedRestart,
     Stages,
     StaticUnit,
+    db,
 )
+from che_deploya.db import Db, Role
+
+
+class ServiceSecrets(StrEnum):
+    """The credentials the service unit loads: the audit HMAC key and the
+    migration role's scram password.
+
+    Each member's value is the credential name the app reads from
+    `$CREDENTIALS_DIRECTORY`, the `<name>.cred` filename, and the key in the
+    encrypted secrets file - so these must match `_audit_key` and
+    `_migrate_password` exactly.
+    """
+
+    AuditHmacKey = "audit-hmac-key"
+    DbMigrationPassword = "db_migration_password"
+
 
 ROSADMIN = DeploySpec(
     root="rosadmin",
@@ -30,6 +50,10 @@ ROSADMIN = DeploySpec(
     components=[
         Component(
             name="service",
+            secrets=Secret(
+                names=frozenset(ServiceSecrets),
+                src="{repo_root}/secrets/rosadmin/{stage}.enc.yaml",
+            ),
             units=[
                 StaticUnit(
                     src="{repo_root}/deploy/systemd/rosadmin@.service",
@@ -46,6 +70,31 @@ ROSADMIN = DeploySpec(
                     per_stage=True,
                 ),
             ],
+            # rosadmin's own cluster on 5433. Table grants live in the schema
+            # migrations (granted to the rosadmin_app group role that each stage's
+            # login role joins), so this declares only the structure: the group, the
+            # migration and runtime roles, and the database the migration role owns.
+            db=Db(
+                port=5433,
+                group_role=Role(name="rosadmin_app"),
+                roles=[
+                    Role(
+                        name="rosadmin_{stage}_migrate",
+                        login=True,
+                        password=ServiceSecrets.DbMigrationPassword,
+                    ),
+                    Role(
+                        name="rosadmin_{stage}_app",
+                        login=True,
+                        member_of="rosadmin_app",
+                    ),
+                ],
+                databases=[
+                    db.Database(
+                        name="rosadmin_{stage}", owner="rosadmin_{stage}_migrate"
+                    )
+                ],
+            ),
             # No restart on purpose: activation restarts the service through
             # the deploy wrapper, and a fresh box has no release to start yet.
             # Unit-file changes are applied by the head cheerleader (admin).

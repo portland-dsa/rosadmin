@@ -58,3 +58,8 @@ Feature: Leader panel walking skeleton
   Scenario: Adding an unknown member is refused
     When Ralsei tries to add an unknown member to "Dark World Research"
     Then the add is refused because there is no such member
+
+  Scenario: Logging in records an audit entry
+    Given the service is running with fake-login enabled
+    And Ralsei is logged in as the leader
+    Then an audit entry for "login" is recorded

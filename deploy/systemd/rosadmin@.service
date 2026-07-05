@@ -17,6 +17,11 @@ WorkingDirectory=/opt/rosadmin/%i/current
 # start before the service runs. The tree is read-only and the service user cannot
 # write it, so this is tamper-evidence and drift detection, not a barrier against root.
 ExecStartPre=/usr/bin/sha256sum -c --quiet --strict MANIFEST.sha256
+# Apply pending migrations before serving, so a failed migration aborts the start
+# rather than serving a half-migrated schema. Runs as the migration role over TCP
+# loopback with scram (the db_migration_password credential); the runtime role has
+# no schema rights and reaches the database only by peer over the socket.
+ExecStartPre=/opt/rosadmin/%i/current/python/bin/python3 -m rosadmin migrate
 # No listener flags: serve takes the fd systemd inherited it. The host/port
 # form exists for bare local development only.
 ExecStart=/opt/rosadmin/%i/current/python/bin/python3 -m rosadmin serve

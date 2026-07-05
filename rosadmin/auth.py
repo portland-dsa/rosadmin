@@ -28,7 +28,7 @@ def get_credentials(subject: str) -> Credentials:
     Resolves the service account key from environment variables in this order:
     ``CREDENTIALS_JSON`` (raw JSON string) > ``CREDENTIALS_FILE`` >
     ``CREDENTIALS_PATH``. ``subject`` must be an actual Workspace user that the
-    service account has been delegated to impersonate — it cannot be the service
+    service account has been delegated to impersonate - it cannot be the service
     account itself.
 
     Raises:

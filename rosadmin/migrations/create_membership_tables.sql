@@ -1,61 +1,34 @@
-----
---
--- Grant for membership_sync schema db objects.
---
-----
+-- The domain tables: members and the leadership bodies they belong to. UUID primary keys
+-- minted by this system
+-- The Solidarity Tech id is only as a private correlation column. Turns out a table for members
+-- instead of a leader and member table is simpler than the prototype, esp with potential later extension.
+-- Role is a bad enum since it's very subject to change, but standing is a good first-class enum because it's
+-- fossilized.
+-- The infrastructure tables live in the sibling `create_infra_tables` migration.
 
-GRANT pg_read_all_data TO ${MEMBER_SYNC_USER}
-GRANT pg_write_all_data TO ${MEMBER_SYNC_USER}
+CREATE TYPE member_standing AS ENUM ('good_standing', 'lapsed');
 
-CREATE TYPE preferred_phone AS ENUM ('HOME', 'MOBILE');
-CREATE TYPE group_type AS ENUM ('WORKING_GROUP', 'CAUCAS', );
-CREATE TYPE leadership_role AS ENUM ('COCHAIR', '')
-
-
-
-CREATE TABLE IF NOT EXISTS members
-(
-    member_id               BIGINT             PRIMARY KEY
-  , email                   TEXT               UNIQUE
-  , alt_email               TEXT
-  , first_name              TEXT               NOT NULL
-  , middle_name             TEXT
-  , last_name               TEXT               NOT NULL
-  , full_name               TEXT
-  , best_phone              preferred_phone    NOT NULL
-  , phone_number            TEXT               NOT NULL
-  , active_member           BOOLEAN            NOT NULL
-  , discord_username        TEXT
-  , discord_user_id         BIGINT 
-  , date_joined             DATE NOT NULL
-
+CREATE TABLE members (
+    id               uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    st_id            bigint NOT NULL UNIQUE,
+    first_name       text,
+    last_name        text,
+    email            text NOT NULL UNIQUE,
+    discord_user_id  bigint UNIQUE,
+    standing         member_standing NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS groups
-(
-    group_id                BIGINT             PRIMARY KEY
-  , group_name              TEXT               UNIQUE
-  , group_type              group_type         NOT NULL
-
+CREATE TABLE leadership_bodies (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name       text NOT NULL,
+    body_type  text NOT NULL,
+    UNIQUE (name, body_type)
 );
 
-CREATE TABLE IF NOT EXISTS group_memberships
-(
-    group_membership_id     BIGINT          PRIMARY KEY
-  , member_id               BIGINT          NOT NULL REFERENCES members
-  , group_id                BIGINT          NOT NULL REFERENCES groups
-
-    -- Synthetic key table
-  , UNIQUE(member_id, group_id)
-);
-
-CREATE TABLE IF NOT EXISTS group_leaders
-(
-    group_leader_id        BIGINT           PRIMARY KEY
-  , member_id              BIGINT           NOT NULL REFERENCES members
-  , group_id               BIGINT           NOT NULL REFERENCES groups
-  , leadership_role        leadership_role  NOT NULL
-
-    -- Synthetic key table
-  , UNIQUE(member_id, group_id, leadership_role)
+CREATE TABLE body_memberships (
+    id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    member_id  uuid NOT NULL REFERENCES members (id) ON DELETE CASCADE,
+    body_id    uuid NOT NULL REFERENCES leadership_bodies (id) ON DELETE CASCADE,
+    role       text NOT NULL CHECK (role IN ('leader', 'member')),
+    UNIQUE (member_id, body_id)
 );

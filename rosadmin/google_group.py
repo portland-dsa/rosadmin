@@ -1,5 +1,5 @@
 """
-`GoogleGroup` — a unified async handle to a single Workspace group across
+`GoogleGroup` - a unified async handle to a single Workspace group across
 Google's three separate group-management APIs (Admin Directory v1, Cloud
 Identity v1, and Groups Settings v1).
 
@@ -77,7 +77,7 @@ SECURE_SETTINGS: SettingsGroup = {
 }
 
 #: Cloud Identity labels that designate a group as both a discussion forum and a
-#: security group. Google requires empty strings for the label values — the
+#: security group. Google requires empty strings for the label values - the
 #: presence of the key is what matters, not the value.
 SECURITY_LABEL: CiGroup = {
     "labels": {
@@ -159,7 +159,7 @@ class GoogleGroup:
             ValueError: if the group hasn't been created or fetched yet (``id`` is None).
         """
         if self.id is None:
-            raise ValueError("id not set — has the group been created yet?")
+            raise ValueError("id not set - has the group been created yet?")
         return f"groups/{self.id}"
 
     # ------------------------------------------------------------------
@@ -185,8 +185,10 @@ class GoogleGroup:
 
     @retry(
         retry=retry_if_exception(
-            lambda e: (isinstance(e, HttpError) and e.status_code != 404)
-            or isinstance(e, _GroupStillExists)
+            lambda e: (
+                (isinstance(e, HttpError) and e.status_code != 404)
+                or isinstance(e, _GroupStillExists)
+            )
         ),
         wait=wait_fixed(2),
         stop=stop_after_delay(60),
@@ -216,7 +218,7 @@ class GoogleGroup:
         """Poll until the remote settings and labels match what was patched.
 
         The Groups Settings and Cloud Identity ``patch`` calls are subject to
-        the same propagation lag as creation — the API accepts the write but the
+        the same propagation lag as creation - the API accepts the write but the
         read doesn't reflect it immediately.
         """
         remote = self._settings.groups().get(groupUniqueId=self.email).execute()
@@ -375,7 +377,7 @@ class GoogleGroup:
 class GoogleGroupBuilder:
     """Fluent builder that creates a new remote Workspace group and returns a ready `GoogleGroup`.
 
-    The name ``build_remote`` is deliberate — calling it creates a real group in
+    The name ``build_remote`` is deliberate - calling it creates a real group in
     Google Workspace, unlike a plain ``build`` that would only construct a local
     object.
 
@@ -453,12 +455,12 @@ class GoogleGroupBuilder:
         assert self._email is not None, "email() is required"
         assert self._name is not None, "name() is required"
         assert self._description is not None, "description() is required"
-        assert (
-            self._settings_group is not None
-        ), "settings() or secure_defaults() is required"
-        assert (
-            self._cloud_identity_group is not None
-        ), "label() or secure_defaults() is required"
+        assert self._settings_group is not None, (
+            "settings() or secure_defaults() is required"
+        )
+        assert self._cloud_identity_group is not None, (
+            "label() or secure_defaults() is required"
+        )
 
         email = self._email
         name = self._name

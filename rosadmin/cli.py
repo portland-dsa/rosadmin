@@ -81,3 +81,18 @@ def serve(
     else:
         logging.info("listener: http://%s:%d (local development)", host, port)
         uvicorn.run("rosadmin.service:app", host=host, port=port)
+
+
+@app.command
+def migrate() -> None:
+    """Apply pending database migrations as the migration role.
+
+    The unit runs this as an `ExecStartPre` so the schema is current before the
+    service serves; a failure here aborts the start rather than serving a
+    half-migrated database. It connects over TCP loopback with scram, the
+    password taken from the `db_migration_password` systemd credential (or
+    `ROSADMIN_DB_MIGRATE_PASSWORD` in dev).
+    """
+    from rosadmin.db.migrate import apply_pending, migrate_uri_from_env
+
+    apply_pending(migrate_uri_from_env(os.environ))

@@ -1,5 +1,5 @@
 name: frontend
-run-name: "${{ github.actor }} — frontend check"
+run-name: "${{ github.actor }} - frontend check"
 on:
     pull_request:
     push:

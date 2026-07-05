@@ -15,13 +15,13 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import os
-import pathlib
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 
 from rosadmin import systemd_notify
+from rosadmin.credentials import read_credential
 from rosadmin.db import dsn_from_env, make_pool
 from rosadmin.db.audit import AuditSink, PostgresAuditSink, RecordingAuditSink
 from rosadmin.db.sessions import PostgresSessionStore
@@ -87,24 +87,17 @@ def _devtools_active(settings: WebSettings) -> bool:
 def _audit_key(env: Mapping[str, str]) -> bytes:
     """The audit HMAC key: a systemd credential on the box, env var in dev.
 
-    Read from `$CREDENTIALS_DIRECTORY/audit-hmac-key` (how systemd delivers it)
-    when present, else `ROSADMIN_AUDIT_HMAC_KEY`. Surrounding whitespace is
-    stripped so the two delivery paths agree: a credential file written with a
-    trailing newline must yield the same key as the same secret in the env var,
-    or one actor's audit history silently forks across two HMACs. The key is
-    never logged.
+    Read through the shared [`read_credential`] from
+    `$CREDENTIALS_DIRECTORY/audit-hmac-key` (how systemd delivers it) or
+    `ROSADMIN_AUDIT_HMAC_KEY`. That the two delivery paths agree byte-for-byte
+    matters here in particular: were a credential file's trailing newline to
+    yield a different key than the same secret set inline, one actor's audit
+    history would silently fork across two HMACs. The key is never logged.
     """
-    creds = env.get("CREDENTIALS_DIRECTORY")
-    raw: str | None = None
-    if creds:
-        path = pathlib.Path(creds) / "audit-hmac-key"
-        if path.exists():
-            raw = path.read_text(encoding="utf-8")
+    raw = read_credential(env, "audit-hmac-key", "ROSADMIN_AUDIT_HMAC_KEY")
     if raw is None:
-        raw = env.get("ROSADMIN_AUDIT_HMAC_KEY")
-    if raw is None or not raw.strip():
         raise RuntimeError("audit HMAC key is not configured")
-    return raw.strip().encode()
+    return raw.encode()
 
 
 def create_app(

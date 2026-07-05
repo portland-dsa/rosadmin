@@ -1,0 +1,7 @@
+# Age recipients for rosadmin's encrypted secrets. This reuses the shared box age
+# recipient (a box-level identity, not per-service - the runtime isolation lives at
+# the systemd-creds layer, not here) alongside the workstation recipient; the same
+# recipient set the sibling deploy uses. Confirm both keys before encrypting.
+creation_rules:
+  - path_regex: secrets[\\/].*\.enc\.ya?ml$ # match .yml too; [\\/] for win+nix path seps
+    age: "age1wrk9tqsk9f5g258q3dla2utjpyeh5q9u28k8w97pn30gmu36cqnq959hy5,age157h9dve7su6uguer30pexnhntgysqttsyd6umrutshkkzmpp9qnqlvuttw"

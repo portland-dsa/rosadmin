@@ -14,6 +14,7 @@ from typing import Awaitable, Callable
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
+from rosadmin.db.audit import record_best_effort
 from rosadmin.web.problems import AppProblem, ProblemCode
 from rosadmin.web.sessions import LeaderContext, SessionStore
 
@@ -91,5 +92,10 @@ async def callback() -> None:
 async def logout(request: Request, response: Response) -> None:
     token = request.cookies.get(SESSION_COOKIE)
     if token is not None:
+        leader = await _store(request).resolve(token)
         await _store(request).revoke(token)
+        if leader is not None:
+            await record_best_effort(
+                request.app.state.audit_sink, "logout", actor=str(leader.member_id)
+            )
     response.delete_cookie(SESSION_COOKIE)

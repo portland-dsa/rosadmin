@@ -7,13 +7,17 @@ from __future__ import annotations
 from behave import given, then, when
 from fastapi.testclient import TestClient
 
+from rosadmin.db.audit import RecordingAuditSink
 from rosadmin.service import create_app
+from rosadmin.web.sessions import InMemorySessionStore
 from rosadmin.web.settings import WebSettings
 
 
 def _client(*, fake_login_enabled: bool) -> TestClient:
     app = create_app(
-        WebSettings(fake_login_enabled=fake_login_enabled, allowed_origin=None)
+        WebSettings(fake_login_enabled=fake_login_enabled, allowed_origin=None),
+        session_store=InMemorySessionStore(),
+        audit_sink=RecordingAuditSink(),
     )
     # https base_url so the Secure session cookie is carried; over http it is dropped.
     return TestClient(app, base_url="https://testserver")
@@ -192,3 +196,9 @@ def step_not_leader(context):
 def step_route_absent(context):
     assert context.response.status_code == 404
     assert context.response.json()["code"] == "not_found"
+
+
+@then('an audit entry for "{action}" is recorded')
+def step_audit_recorded(context, action):
+    records = context.client.app.state.audit_sink.records
+    assert any(r.action == action for r in records), [r.action for r in records]

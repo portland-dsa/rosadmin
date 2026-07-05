@@ -13,8 +13,8 @@ wheels = [
 
 [[package]]
 name = "che-deploya"
-version = "0.4.0"
-source = { git = "https://github.com/portland-dsa/che-deploya?tag=v0.4.0#9919b85f2589aa080082f066e23fc5d2bc4f0fab" }
+version = "0.4.1"
+source = { git = "https://github.com/portland-dsa/che-deploya?tag=v0.4.1#9463e6aa9492c722457e30160150331ffd7fd458" }
 dependencies = [
     { name = "cyclopts" },
 ]
@@ -108,4 +108,4 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "che-deploya", git = "https://github.com/portland-dsa/che-deploya?tag=v0.4.0" }]
+requires-dist = [{ name = "che-deploya", git = "https://github.com/portland-dsa/che-deploya?tag=v0.4.1" }]

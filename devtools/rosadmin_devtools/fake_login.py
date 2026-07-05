@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request, Response
 
+from rosadmin.db.audit import record_best_effort
 from rosadmin.web.auth import set_session_cookie
 from rosadmin.web.models import FakeLoginRequest, MeResponse
 from rosadmin.web.sessions import SessionStore
@@ -26,6 +27,12 @@ async def fake_login(
     store: SessionStore = request.app.state.session_store
     leader = directory.leader_context(body.persona)
     token = await store.create(leader)
+    await record_best_effort(
+        request.app.state.audit_sink,
+        "login",
+        actor=str(leader.member_id),
+        detail={"method": "fake"},
+    )
     set_session_cookie(response, token)
     return MeResponse(
         display_name=leader.display_name,

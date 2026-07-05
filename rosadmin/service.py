@@ -15,16 +15,20 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import os
-from collections.abc import AsyncIterator
+import pathlib
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 
 from rosadmin import systemd_notify
+from rosadmin.db import dsn_from_env, make_pool
+from rosadmin.db.audit import AuditSink, PostgresAuditSink, RecordingAuditSink
+from rosadmin.db.sessions import PostgresSessionStore
 from rosadmin.web.auth import auth_router, origin_guard
 from rosadmin.web.problems import install_handlers
 from rosadmin.web.routes import api_router
-from rosadmin.web.sessions import InMemorySessionStore
+from rosadmin.web.sessions import SessionStore
 from rosadmin.web.settings import WebSettings, settings_from_env
 
 
@@ -44,6 +48,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # check (not assert) so the readiness gate is not elided under `python -O`.
     if (await _healthz())["status"] != "ok":
         raise RuntimeError("startup health check failed")
+
+    pool = None
+    if getattr(app.state, "session_store", None) is None:
+        pool = make_pool(dsn_from_env(os.environ))
+        await pool.open()
+        app.state.pool = pool
+        app.state.session_store = PostgresSessionStore(pool)
+        app.state.audit_sink = PostgresAuditSink(pool, _audit_key(os.environ))
+
     systemd_notify.notify_ready()
 
     interval = systemd_notify.watchdog_interval()
@@ -55,6 +68,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+        if pool is not None:
+            await pool.close()
 
 
 def _devtools_active(settings: WebSettings) -> bool:
@@ -69,8 +84,41 @@ def _devtools_active(settings: WebSettings) -> bool:
     )
 
 
-def create_app(settings: WebSettings | None = None) -> FastAPI:
-    """Assemble the service; the dev surface and docs sit behind the double gate."""
+def _audit_key(env: Mapping[str, str]) -> bytes:
+    """The audit HMAC key: a systemd credential on the box, env var in dev.
+
+    Read from `$CREDENTIALS_DIRECTORY/audit-hmac-key` (how systemd delivers it)
+    when present, else `ROSADMIN_AUDIT_HMAC_KEY`. Surrounding whitespace is
+    stripped so the two delivery paths agree: a credential file written with a
+    trailing newline must yield the same key as the same secret in the env var,
+    or one actor's audit history silently forks across two HMACs. The key is
+    never logged.
+    """
+    creds = env.get("CREDENTIALS_DIRECTORY")
+    raw: str | None = None
+    if creds:
+        path = pathlib.Path(creds) / "audit-hmac-key"
+        if path.exists():
+            raw = path.read_text(encoding="utf-8")
+    if raw is None:
+        raw = env.get("ROSADMIN_AUDIT_HMAC_KEY")
+    if raw is None or not raw.strip():
+        raise RuntimeError("audit HMAC key is not configured")
+    return raw.strip().encode()
+
+
+def create_app(
+    settings: WebSettings | None = None,
+    *,
+    session_store: SessionStore | None = None,
+    audit_sink: AuditSink | None = None,
+) -> FastAPI:
+    """Assemble the service; the dev surface and docs sit behind the double gate.
+
+    With no stores injected, the session store and audit sink are built from a
+    Postgres pool in the lifespan (production). Tests inject the in-memory
+    session fake and a `RecordingAuditSink` so no database is needed.
+    """
     if settings is None:
         settings = settings_from_env(os.environ)
     devtools = _devtools_active(settings)
@@ -81,7 +129,10 @@ def create_app(settings: WebSettings | None = None) -> FastAPI:
         openapi_url="/api/openapi.json" if devtools else None,
     )
     app.state.settings = settings
-    app.state.session_store = InMemorySessionStore()
+    app.state.pool = None
+    if session_store is not None:
+        app.state.session_store = session_store
+        app.state.audit_sink = audit_sink or RecordingAuditSink()
     install_handlers(app)
     app.middleware("http")(origin_guard)
     app.include_router(api_router)

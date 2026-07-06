@@ -1,4 +1,5 @@
-"""The leader-facing resource routes. Every handler demands a LeaderContext."""
+"""The leader-facing resource routes. Every handler demands a directory and a
+session, in that order - see `require_directory`."""
 
 from __future__ import annotations
 
@@ -7,7 +8,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Request
 
-from rosadmin.web.auth import require_leader
+from rosadmin.web.auth import require_session
 from rosadmin.web.directory import MemberDirectory
 from rosadmin.web.models import (
     AddMemberRequest,
@@ -17,13 +18,25 @@ from rosadmin.web.models import (
     SearchRequest,
     SearchResponse,
 )
-from rosadmin.web.sessions import LeaderContext
+from rosadmin.web.problems import AppProblem, ProblemCode
+from rosadmin.web.sessions import Principal
 
 api_router = APIRouter(prefix="/api")
 
 
-def _directory(request: Request) -> MemberDirectory:
-    return request.app.state.directory
+def require_directory(request: Request) -> MemberDirectory:
+    """The stub/records directory, or 501 when reads are not wired in this build.
+
+    Deployed builds carry no directory yet, so the resource routes answer a stable
+    501 there; a local build with devtools serves stub data. Placed before the
+    session dependency so the answer does not depend on being logged in.
+    """
+    directory = request.app.state.directory
+    if directory is None:
+        raise AppProblem(
+            501, ProblemCode.READS_NOT_AVAILABLE, "reads are not yet available"
+        )
+    return directory
 
 
 @api_router.get("/healthz")
@@ -33,20 +46,21 @@ async def healthz() -> dict[str, str]:
 
 @api_router.get("/me", response_model=MeResponse)
 async def me(
-    request: Request, leader: LeaderContext = Depends(require_leader)
+    directory: MemberDirectory = Depends(require_directory),
+    principal: Principal = Depends(require_session),
 ) -> MeResponse:
-    directory = _directory(request)
     return MeResponse(
-        display_name=leader.display_name,
-        groups=await directory.summaries_for(leader),
+        display_name=await directory.display_name_for(principal),
+        groups=await directory.summaries_for(principal),
     )
 
 
 @api_router.get("/me/groups", response_model=list[Group])
 async def my_groups(
-    request: Request, leader: LeaderContext = Depends(require_leader)
+    directory: MemberDirectory = Depends(require_directory),
+    principal: Principal = Depends(require_session),
 ) -> list[Group]:
-    return await _directory(request).groups_for(leader)
+    return await directory.groups_for(principal)
 
 
 # A POST, not a GET with a query string: the searched email is member PII and must
@@ -54,32 +68,33 @@ async def my_groups(
 # method with a body) lands with real ecosystem support.
 @api_router.post("/members/search", response_model=SearchResponse)
 async def search_members(
-    request: Request,
     body: SearchRequest,
-    leader: LeaderContext = Depends(require_leader),
+    directory: MemberDirectory = Depends(require_directory),
+    principal: Principal = Depends(require_session),
 ) -> SearchResponse:
-    return await _directory(request).search(body.email)
+    # search does not scope by principal (unused), but still demands a live session.
+    return await directory.search(body.email)
 
 
 @api_router.post(
     "/groups/{group_id}/members", response_model=GroupMember, status_code=201
 )
 async def add_member(
-    request: Request,
     group_id: Annotated[UUID, Path(description="The group's unique ID.")],
     body: AddMemberRequest,
-    leader: LeaderContext = Depends(require_leader),
+    directory: MemberDirectory = Depends(require_directory),
+    principal: Principal = Depends(require_session),
 ) -> GroupMember:
-    return await _directory(request).add_member(leader, group_id, body.member_id)
+    return await directory.add_member(principal, group_id, body.member_id)
 
 
 @api_router.delete("/groups/{group_id}/members/{member_id}", status_code=204)
 async def remove_member(
-    request: Request,
     group_id: Annotated[UUID, Path(description="The group's unique ID.")],
     member_id: Annotated[
         UUID, Path(description="The member's unique ID within that group.")
     ],
-    leader: LeaderContext = Depends(require_leader),
+    directory: MemberDirectory = Depends(require_directory),
+    principal: Principal = Depends(require_session),
 ) -> None:
-    await _directory(request).remove_member(leader, group_id, member_id)
+    await directory.remove_member(principal, group_id, member_id)

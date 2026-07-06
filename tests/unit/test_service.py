@@ -87,3 +87,16 @@ def test_audit_failure_does_not_poison_committed_auth():
 
     logout = client.post("/api/auth/logout")
     assert logout.status_code == 204, logout.text
+
+
+def test_resource_routes_501_without_a_directory():
+    # A build with no directory wired (a deployed build, today) answers a stable
+    # 501 rather than a 500 or a misleading empty result.
+    app = create_app(
+        WebSettings(fake_login_enabled=False, allowed_origin=None),
+        session_store=InMemorySessionStore(),
+    )
+    with TestClient(app) as client:
+        response = client.get("/api/me")
+    assert response.status_code == 501
+    assert response.json()["code"] == "reads_not_available"

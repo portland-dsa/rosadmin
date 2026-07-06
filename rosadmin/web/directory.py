@@ -12,22 +12,24 @@ from rosadmin.web.models import (
     SearchHit,
     SearchMiss,
 )
-from rosadmin.web.sessions import LeaderContext
+from rosadmin.web.sessions import Principal
 
 
 class MemberDirectory(Protocol):
-    """Reads and membership mutations, scoped to the acting leader."""
+    """Reads and membership mutations, scoped to the acting principal."""
 
     async def search(self, email: str) -> SearchHit | SearchMiss: ...
 
-    async def summaries_for(self, leader: LeaderContext) -> list[GroupSummary]: ...
+    async def display_name_for(self, principal: Principal) -> str: ...
 
-    async def groups_for(self, leader: LeaderContext) -> list[Group]: ...
+    async def summaries_for(self, principal: Principal) -> list[GroupSummary]: ...
+
+    async def groups_for(self, principal: Principal) -> list[Group]: ...
 
     async def add_member(
-        self, leader: LeaderContext, group_id: UUID, member_id: UUID
+        self, principal: Principal, group_id: UUID, member_id: UUID
     ) -> GroupMember: ...
 
     async def remove_member(
-        self, leader: LeaderContext, group_id: UUID, member_id: UUID
+        self, principal: Principal, group_id: UUID, member_id: UUID
     ) -> None: ...

@@ -1,45 +1,45 @@
-"""Server-side sessions: opaque token in, leader context out."""
+"""Server-side sessions: opaque token in, authenticated principal out."""
 
 from __future__ import annotations
 
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
-from typing import Callable, Protocol
-from uuid import UUID
+from datetime import datetime, timedelta
+from typing import Protocol
+
+from rosadmin.sso import DiscordUserId
+from rosadmin.web.clock import Clock, utcnow
 
 ABSOLUTE_LIFETIME = timedelta(hours=12)
 IDLE_TIMEOUT = timedelta(hours=2)
 
-Clock = Callable[[], datetime]
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
-
 
 @dataclass(frozen=True)
-class LeaderContext:
-    """Everything a route handler may know about the logged-in leader."""
+class Principal:
+    """The authenticated subject of a session: a verified Discord identity.
 
-    member_id: UUID
-    display_name: str
-    managed_group_ids: frozenset[UUID]
+    All a real login knows is the Discord snowflake. The enriched view - the
+    member record, display name, and the groups they may manage - is derived
+    from this principal against the records, and lands with records-based
+    authorization; it is deliberately not stored on the session here.
+    """
+
+    discord_id: DiscordUserId
 
 
 class SessionStore(Protocol):
     """Create, resolve, and revoke sessions; resolution refreshes the idle clock."""
 
-    async def create(self, leader: LeaderContext) -> str: ...
+    async def create(self, principal: Principal) -> str: ...
 
-    async def resolve(self, token: str) -> LeaderContext | None: ...
+    async def resolve(self, token: str) -> Principal | None: ...
 
     async def revoke(self, token: str) -> None: ...
 
 
 @dataclass
 class _Entry:
-    leader: LeaderContext
+    principal: Principal
     created: datetime
     last_seen: datetime
 
@@ -51,17 +51,17 @@ class InMemorySessionStore:
     passes one.
     """
 
-    def __init__(self, clock: Clock = _utcnow) -> None:
+    def __init__(self, clock: Clock = utcnow) -> None:
         self._clock = clock
         self._entries: dict[str, _Entry] = {}
 
-    async def create(self, leader: LeaderContext) -> str:
+    async def create(self, principal: Principal) -> str:
         token = secrets.token_urlsafe(32)
         now = self._clock()
-        self._entries[token] = _Entry(leader=leader, created=now, last_seen=now)
+        self._entries[token] = _Entry(principal=principal, created=now, last_seen=now)
         return token
 
-    async def resolve(self, token: str) -> LeaderContext | None:
+    async def resolve(self, token: str) -> Principal | None:
         entry = self._entries.get(token)
         if entry is None:
             return None
@@ -74,7 +74,7 @@ class InMemorySessionStore:
             del self._entries[token]
             return None
         entry.last_seen = now
-        return entry.leader
+        return entry.principal
 
     async def revoke(self, token: str) -> None:
         self._entries.pop(token, None)

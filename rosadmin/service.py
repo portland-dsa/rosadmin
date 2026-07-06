@@ -24,9 +24,14 @@ from rosadmin import systemd_notify
 from rosadmin.credentials import read_credential
 from rosadmin.db import dsn_from_env, make_pool
 from rosadmin.db.audit import AuditSink, PostgresAuditSink, RecordingAuditSink
+from rosadmin.db.jti import PostgresJtiCache
+from rosadmin.db.rate_limit import PostgresRateLimiter
 from rosadmin.db.sessions import PostgresSessionStore
+from rosadmin.sso import SsoConfig, sso_config_from_env
 from rosadmin.web.auth import auth_router, origin_guard
+from rosadmin.web.jti import JtiCache
 from rosadmin.web.problems import install_handlers
+from rosadmin.web.rate_limit import InMemoryRateLimiter, RateLimiter
 from rosadmin.web.routes import api_router
 from rosadmin.web.sessions import SessionStore
 from rosadmin.web.settings import WebSettings, settings_from_env
@@ -56,6 +61,9 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.pool = pool
         app.state.session_store = PostgresSessionStore(pool)
         app.state.audit_sink = PostgresAuditSink(pool, _audit_key(os.environ))
+        app.state.sso = sso_config_from_env(os.environ)
+        app.state.jti_cache = PostgresJtiCache(pool)
+        app.state.rate_limiter = PostgresRateLimiter(pool)
 
     systemd_notify.notify_ready()
 
@@ -105,12 +113,19 @@ def create_app(
     *,
     session_store: SessionStore | None = None,
     audit_sink: AuditSink | None = None,
+    sso: SsoConfig | None = None,
+    jti_cache: JtiCache | None = None,
+    rate_limiter: RateLimiter | None = None,
 ) -> FastAPI:
     """Assemble the service; the dev surface and docs sit behind the double gate.
 
-    With no stores injected, the session store and audit sink are built from a
-    Postgres pool in the lifespan (production). Tests inject the in-memory
-    session fake and a `RecordingAuditSink` so no database is needed.
+    With no stores injected, the session store, audit sink, SSO config, jti
+    cache, and rate limiter are all built from a Postgres pool and the environment
+    in the lifespan (production). Tests inject the in-memory session fake, a
+    `RecordingAuditSink`, and (when they exercise the login relay) an explicit
+    `SsoConfig` and jti cache, so no database or real botonio socket is needed; the
+    rate limiter defaults to an in-memory one so a test that does not care about
+    limiting is never throttled by a shared Postgres counter.
     """
     if settings is None:
         settings = settings_from_env(os.environ)
@@ -123,9 +138,13 @@ def create_app(
     )
     app.state.settings = settings
     app.state.pool = None
+    app.state.directory = None
     if session_store is not None:
         app.state.session_store = session_store
         app.state.audit_sink = audit_sink or RecordingAuditSink()
+        app.state.sso = sso
+        app.state.jti_cache = jti_cache
+        app.state.rate_limiter = rate_limiter or InMemoryRateLimiter()
     install_handlers(app)
     app.middleware("http")(origin_guard)
     app.include_router(api_router)

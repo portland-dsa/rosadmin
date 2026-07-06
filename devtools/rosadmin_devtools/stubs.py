@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from rosadmin.mock_st.cast import identity_for
 from rosadmin.mock_st.personas import Persona
+from rosadmin.sso import DiscordUserId
 from rosadmin.web.models import (
     Group,
     GroupMember,
@@ -25,7 +26,7 @@ from rosadmin.web.models import (
     SearchMiss,
 )
 from rosadmin.web.problems import AppProblem, ProblemCode
-from rosadmin.web.sessions import LeaderContext
+from rosadmin.web.sessions import Principal
 
 _NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "https://rosadmin.invalid/stub")
 
@@ -36,6 +37,13 @@ def _member_id(email: str) -> uuid.UUID:
 
 def _group_id(name: str) -> uuid.UUID:
     return uuid.uuid5(_NAMESPACE, f"group:{name}")
+
+
+def _stub_discord_id(email: str) -> str:
+    # A stub stand-in for the Discord id, used only by the local fake-login surface
+    # to key a principal back to its persona. Deliberately not a real-looking
+    # snowflake - nothing here ever talks to Discord.
+    return f"fake-discord-{email}"
 
 
 @dataclass(frozen=True)
@@ -88,6 +96,7 @@ class StubDirectory:
 
     def __init__(self) -> None:
         self._people = {p.email: p for p in _ROSTER}
+        self._by_discord = {_stub_discord_id(p.email): p for p in _ROSTER}
         self._group_meta = {
             _group_id(name): (name, body_type) for name, body_type, _ in _GROUPS
         }
@@ -111,7 +120,7 @@ class StubDirectory:
             role=role,
         )
 
-    def leader_context(self, persona_name: str) -> LeaderContext:
+    def principal_for(self, persona_name: str) -> Principal:
         person = next((p for p in _ROSTER if p.persona.value == persona_name), None)
         if person is None:
             raise AppProblem(404, ProblemCode.UNKNOWN_PERSONA, "no such persona")
@@ -119,10 +128,21 @@ class StubDirectory:
             raise AppProblem(
                 403, ProblemCode.NOT_CHAPTER_LEADER, "persona is not a chapter leader"
             )
-        return LeaderContext(
-            member_id=_member_id(person.email),
-            display_name=person.full_name,
-            managed_group_ids=frozenset(self._group_meta),
+        return Principal(discord_id=DiscordUserId(_stub_discord_id(person.email)))
+
+    def _person(self, principal: Principal) -> _Person:
+        person = self._by_discord.get(principal.discord_id)
+        if person is None:
+            raise AppProblem(404, ProblemCode.NOT_FOUND, "unknown principal")
+        return person
+
+    def _managed_ids(self, principal: Principal) -> frozenset[uuid.UUID]:
+        # The stub leader manages every seeded group; a non-leader manages none.
+        person = self._person(principal)
+        return (
+            frozenset(self._group_meta)
+            if person.persona is Persona.LEADER
+            else frozenset()
         )
 
     async def search(self, email: str) -> SearchHit | SearchMiss:
@@ -141,14 +161,18 @@ class StubDirectory:
             )
         return SearchMiss.model_validate({"status": status})
 
-    async def summaries_for(self, leader: LeaderContext) -> list[GroupSummary]:
+    async def display_name_for(self, principal: Principal) -> str:
+        return self._person(principal).full_name
+
+    async def summaries_for(self, principal: Principal) -> list[GroupSummary]:
+        managed = self._managed_ids(principal)
         return [
             GroupSummary(id=gid, name=name, body_type=body_type)
             for gid, (name, body_type) in self._group_meta.items()
-            if gid in leader.managed_group_ids
+            if gid in managed
         ]
 
-    async def groups_for(self, leader: LeaderContext) -> list[Group]:
+    async def groups_for(self, principal: Principal) -> list[Group]:
         return [
             Group(
                 id=summary.id,
@@ -158,19 +182,22 @@ class StubDirectory:
                     self._members[summary.id].values(), key=lambda m: m.full_name
                 ),
             )
-            for summary in await self.summaries_for(leader)
+            for summary in await self.summaries_for(principal)
         ]
 
-    def _managed_group(self, leader: LeaderContext, group_id: uuid.UUID) -> None:
+    def _managed_group(self, principal: Principal, group_id: uuid.UUID) -> None:
         # Unknown and not-yours answer identically: the API does not confirm the
         # existence of what a session cannot touch.
-        if group_id not in leader.managed_group_ids or group_id not in self._members:
+        if (
+            group_id not in self._managed_ids(principal)
+            or group_id not in self._members
+        ):
             raise AppProblem(404, ProblemCode.NOT_FOUND, "no such group")
 
     async def add_member(
-        self, leader: LeaderContext, group_id: uuid.UUID, member_id: uuid.UUID
+        self, principal: Principal, group_id: uuid.UUID, member_id: uuid.UUID
     ) -> GroupMember:
-        self._managed_group(leader, group_id)
+        self._managed_group(principal, group_id)
         person = next((p for p in _ROSTER if _member_id(p.email) == member_id), None)
         if person is None or _STATUS_BY_PERSONA[person.persona] != "good_standing":
             # Only members surfaced by a good-standing search hit are addable;
@@ -183,9 +210,9 @@ class StubDirectory:
         return entry
 
     async def remove_member(
-        self, leader: LeaderContext, group_id: uuid.UUID, member_id: uuid.UUID
+        self, principal: Principal, group_id: uuid.UUID, member_id: uuid.UUID
     ) -> None:
-        self._managed_group(leader, group_id)
+        self._managed_group(principal, group_id)
         if member_id not in self._members[group_id]:
             raise AppProblem(
                 404, ProblemCode.NOT_A_MEMBER, "not a member of this group"

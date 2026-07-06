@@ -25,16 +25,16 @@ async def fake_login(
 ) -> MeResponse:
     directory: StubDirectory = request.app.state.directory
     store: SessionStore = request.app.state.session_store
-    leader = directory.leader_context(body.persona)
-    token = await store.create(leader)
+    principal = directory.principal_for(body.persona)
+    token = await store.create(principal)
     await record_best_effort(
         request.app.state.audit_sink,
         "login",
-        actor=str(leader.member_id),
+        actor=principal.discord_id,
         detail={"method": "fake"},
     )
     set_session_cookie(response, token)
     return MeResponse(
-        display_name=leader.display_name,
-        groups=await directory.summaries_for(leader),
+        display_name=await directory.display_name_for(principal),
+        groups=await directory.summaries_for(principal),
     )

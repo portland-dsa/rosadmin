@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { api } from './api'
-import type { Group, GroupDetail, Member, RosterMember, Session } from './types'
+import type { GroupDetail, Member, RosterMember, Session } from './types'
 
 export type Mode = 'filter' | 'add'
 
@@ -144,14 +144,35 @@ function matchesQuery(m: RosterMember, query: string): boolean {
 export function useGroupAdmin() {
   const [session, setSession] = useState<Session | null>(null)
   const [sessionLoading, setSessionLoading] = useState(true)
-  const [groups, setGroups] = useState<Group[]>([])
+  const [groups, setGroups] = useState<GroupDetail[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [mode, setMode] = useState<Mode>('filter')
   const [query, setQuery] = useState('')
   const [state, dispatch] = useReducer(reducer, initialState)
 
+  /* The loaded groups with their rosters. `/api/me/groups` returns every group
+     with members embedded, so selecting one is a local lookup, not a fetch; the
+     reducer's `group` is the active, optimistically-mutated copy. The ref lets
+     selectGroup and the mutation handlers read the latest rosters without stale
+     closures. */
+  const groupsRef = useRef<GroupDetail[]>([])
+
   /* setTimeout handles for deferred removals, keyed by member id. */
   const removeTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+
+  const setGroupsBoth = useCallback((gs: GroupDetail[]) => {
+    groupsRef.current = gs
+    setGroups(gs)
+  }, [])
+
+  const patchRoster = useCallback(
+    (groupId: string, fn: (members: RosterMember[]) => RosterMember[]) => {
+      setGroupsBoth(
+        groupsRef.current.map((g) => (g.id === groupId ? { ...g, members: fn(g.members) } : g)),
+      )
+    },
+    [setGroupsBoth],
+  )
 
   // Check for an existing session on first load.
   useEffect(() => {
@@ -175,32 +196,20 @@ export function useGroupAdmin() {
     }
   }, [])
 
-  // Once signed in, load the groups this leader administers.
+  // Once signed in, load every group this leader administers, rosters included,
+  // and open the first one.
   useEffect(() => {
     if (!session) return
     let active = true
-    api
-      .getBodies()
-      .then((gs) => {
-        if (!active) return
-        setGroups(gs)
-        setSelectedId((cur) => cur ?? gs[0]?.id ?? null)
-      })
-      .catch(() => {})
-    return () => {
-      active = false
-    }
-  }, [session])
-
-  // Load the roster whenever the selected group changes.
-  useEffect(() => {
-    if (!selectedId) return
-    let active = true
     dispatch({ type: 'loadStart' })
     api
-      .getBody(selectedId)
-      .then((g) => {
-        if (active) dispatch({ type: 'loadOk', group: g })
+      .getGroups()
+      .then((gs) => {
+        if (!active) return
+        setGroupsBoth(gs)
+        const first = gs[0] ?? null
+        setSelectedId(first?.id ?? null)
+        dispatch(first ? { type: 'loadOk', group: first } : { type: 'reset' })
       })
       .catch((e) => {
         if (active) dispatch({ type: 'loadErr', message: errText(e) })
@@ -208,7 +217,7 @@ export function useGroupAdmin() {
     return () => {
       active = false
     }
-  }, [selectedId])
+  }, [session, setGroupsBoth])
 
   // Cancel any pending removal timers on unmount.
   useEffect(() => {
@@ -229,9 +238,9 @@ export function useGroupAdmin() {
   }, [state.add])
 
   const login = useCallback(async () => {
-    api.beginLogin()
-    // In the real client beginLogin navigates away; in the mock it flips a
-    // flag, so re-reading the session here picks the new login up.
+    await api.beginLogin()
+    // Real Discord login navigates away, so what follows only runs for the mock
+    // and fake-login paths, where the session is now readable.
     const s = await api.getSession()
     setSession(s)
   }, [])
@@ -241,12 +250,12 @@ export function useGroupAdmin() {
     removeTimers.current.clear()
     await api.logout()
     setSession(null)
-    setGroups([])
+    setGroupsBoth([])
     setSelectedId(null)
     setMode('filter')
     setQuery('')
     dispatch({ type: 'reset' })
-  }, [])
+  }, [setGroupsBoth])
 
   const changeMode = useCallback((next: Mode) => {
     setMode(next)
@@ -258,6 +267,8 @@ export function useGroupAdmin() {
     setSelectedId(id)
     setMode('filter')
     setQuery('')
+    const g = groupsRef.current.find((x) => x.id === id)
+    if (g) dispatch({ type: 'loadOk', group: g })
   }, [])
 
   const search = useCallback(async () => {
@@ -265,14 +276,13 @@ export function useGroupAdmin() {
     if (!email) return
     dispatch({ type: 'searchStart' })
     try {
-      const res = await api.searchMembers(email)
-      const match = res.matches[0]
-      if (!match) {
+      const outcome = await api.searchMember(email)
+      if (outcome.status !== 'good_standing') {
         dispatch({ type: 'searchNotFound', email })
-      } else if (state.group?.members.some((m) => m.id === match.id)) {
-        dispatch({ type: 'searchAlreadyMember', name: match.name, groupName: state.group.name })
+      } else if (state.group?.members.some((m) => m.id === outcome.member.id)) {
+        dispatch({ type: 'searchAlreadyMember', name: outcome.member.name, groupName: state.group.name })
       } else {
-        dispatch({ type: 'searchFound', member: match })
+        dispatch({ type: 'searchFound', member: outcome.member })
       }
     } catch (e) {
       dispatch({ type: 'searchErr', message: errText(e) })
@@ -287,16 +297,15 @@ export function useGroupAdmin() {
       if (state.group.members.some((m) => m.id === member.id)) return
       const groupName = state.group.name
       try {
-        await api.updateMemberGroups(member.id, [
-          { id: selectedId, role: 'member', remove: false },
-        ])
-        dispatch({ type: 'added', member: { ...member, role: 'member' }, groupName })
+        const added = await api.addMember(selectedId, member.id)
+        dispatch({ type: 'added', member: added, groupName })
+        patchRoster(selectedId, (members) => [added, ...members.filter((m) => m.id !== added.id)])
         setQuery('')
       } catch (e) {
         dispatch({ type: 'addErr', message: errText(e) })
       }
     },
-    [selectedId, state.group],
+    [selectedId, state.group, patchRoster],
   )
 
   // Removal is deferred: show a tombstone, and only fire the request after the
@@ -308,13 +317,16 @@ export function useGroupAdmin() {
       const timer = setTimeout(() => {
         removeTimers.current.delete(member.id)
         api
-          .updateMemberGroups(member.id, [{ id: selectedId, role: member.role, remove: true }])
-          .then(() => dispatch({ type: 'removeCommit', id: member.id }))
+          .removeMember(selectedId, member.id)
+          .then(() => {
+            dispatch({ type: 'removeCommit', id: member.id })
+            patchRoster(selectedId, (members) => members.filter((m) => m.id !== member.id))
+          })
           .catch(() => dispatch({ type: 'removeErr', id: member.id }))
       }, UNDO_MS)
       removeTimers.current.set(member.id, timer)
     },
-    [selectedId],
+    [selectedId, patchRoster],
   )
 
   const undoRemove = useCallback((id: string) => {
@@ -333,6 +345,9 @@ export function useGroupAdmin() {
     people: roster.length,
     leaders: roster.filter((m) => m.role === 'leader').length,
   }
+  // The signed-in leader carries no id in the session, so mark "you" by matching
+  // the display name against the roster.
+  const selfId = session ? (roster.find((m) => m.name === session.displayName)?.id ?? '') : ''
 
   return {
     session,
@@ -351,6 +366,7 @@ export function useGroupAdmin() {
     group: state.group,
     visibleMembers,
     counts,
+    selfId,
     add: state.add,
     search,
     clearAdd,

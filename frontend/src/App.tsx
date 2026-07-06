@@ -21,7 +21,7 @@ function App() {
 
   return (
     <>
-      <PageHeader memberName={app.session.member.name} />
+      <PageHeader memberName={app.session.displayName} />
       <main className="page">
         <ControlPanel
           groups={app.groups}
@@ -63,7 +63,7 @@ function App() {
             members={app.visibleMembers}
             removingIds={app.removingIds}
             justAddedIds={justAddedIds}
-            selfId={app.session.member.id}
+            selfId={app.selfId}
             groupName={app.group?.name ?? ''}
             filterTerm={filterTerm}
             onStartRemove={app.startRemove}

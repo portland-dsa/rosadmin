@@ -10,6 +10,8 @@ container is reused for speed.
 
 from __future__ import annotations
 
+import asyncio
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -33,6 +35,16 @@ _TABLES = (
     "rate_limit_counters",
     "audit_log",
 )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def event_loop_policy():
+    # psycopg's async pool cannot run under Windows' default ProactorEventLoop;
+    # it needs a selector loop. Linux (dev laptop and CI alike) keeps the
+    # default policy untouched.
+    if sys.platform == "win32":
+        return asyncio.WindowsSelectorEventLoopPolicy()
+    return asyncio.get_event_loop_policy()
 
 
 @dataclass(frozen=True)

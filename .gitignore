@@ -82,3 +82,5 @@ CLAUDE.*.md
 .DS_Store
 # Local live credentials for the pre-push hook
 .env
+# Cookie jar dropped by the local login curl
+jar.txt

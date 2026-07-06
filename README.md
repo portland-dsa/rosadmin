@@ -60,7 +60,7 @@ With luck, this will create a group for you, add a member, then grab the group i
 If you don't want to delete the test group at the end (say you want to go into the admin panel and inspect it), you can run
 
 ```zsh
-uv run rosadmin one-shot test-create-group --no-delete-at-end
+uv run rosadmin one-shot test-group-lifecycle --delete-at-end=False
 ```
 
 Just make sure to delete the group manually if you don't want it there.
@@ -73,34 +73,137 @@ Now you can run:
 uv sync --dev
 ```
 
-To install the dev dependencies. We use `black` for formatting. I use `pylance` for type checking, but any compatible type checker should work. Pylance/Pyright is recommended if you're contributing, however, because we reject PRs with warnings that may be exclusive to it!
+To install the dev dependencies. We use `ruff` for formatting. I use `pylance` for type checking, but any compatible type checker should work. Pylance/Pyright is recommended if you're contributing, however, because we reject PRs with warnings that may be exclusive to it!
 
 The dev dependencies also include `google-api-python-client-stubs` which is an unofficial but maintained library of type stubs for the Google API. If your editor and language server isn't cooperating, a quick `reveal_type` on whatever is failing usually fixes it.
 
 We also use both `pytest` and `behave`. For testing run
 
-```
+```zsh
 uv run pytest
 uv run behave
 ```
 
 Add the `--tags live` if you have a key and want to run any tests that hit an actual server somewhere. The pre-push commit hooks run the live tests, you can push with `--no-verify` if you haven't been given them.
 
+Note: to test anything significant you'll need a DWD-enabled service account key for some sort of (ideally) isolated staging workspace account hierarchy.
+
+### Serving
+
+To *serve* `rosadmin` you need two values: an HMAC key, and a Database.
+
+To get an hmac key:
+```zsh
+openssl rand -hex 32
+```
+
+Store this for later.
+
+Then, set up the database:
+```zsh
+podman compose -f deploy/test-infra/compose.yaml up -d
+uv run yoyo apply -b --no-config-file -d postgresql+psycopg://rosadmin_app@127.0.0.1:54432/rosadmin_dev rosadmin/migrations
+```
+
+Then, set up a `.env` file as such:
+
+```
+ROSADMIN_DB_DSN="host=127.0.0.1 port=54432 dbname=rosadmin_dev user=rosadmin_app"
+ROSADMIN_AUDIT_HMAC_KEY=<the key from openssl>
+```
+
+Now you can launch `rosadmin`:
+```zsh
+uv run --env-file .env rosadmin serve --port <port>
+```
+
+Note that to do anything useful you should follow the steps in `SSO Flow` below.
+
+### SSO Flow
+
+#### Fake Login
+
 If you're a front-end dev developing against the backend:
 
 `zsh|bash|etc`:
 ```zsh
-ROSADMIN_FAKE_LOGIN=1 uv run rosadmin serve
+ROSADMIN_FAKE_LOGIN=1 uv run --env-file .env rosadmin serve
 ```
 
 `powershell`
 ```pwsh
-$env:ROSADMIN_FAKE_LOGIN="1"; uv run rosadmin serve
+$env:ROSADMIN_FAKE_LOGIN="1"; uv run --env-file .env rosadmin serve
 ```
 
-This enables the fake login entry-point for developing against for test purposes. Note: to test anything significant you'll need a DWD-enabled service account key for some sort of (ideally) isolated staging workspace account hierarchy.
+**Or** you can also add `ROSADMIN_FAKE_LOGIN=1` to your `.env` file.
 
-**Second Note** if you're running the SPA from Vite's dev server, you probably want a proxy entry `server.proxy: { "/api": "https:/127.0.0.1:8000" }` so it behaves just like a real ~~boy~~ deployment. Otherwise you'll get weird CORS issues since the requests aren't proxied like they are on the live box.
+This enables the fake login entry-point for developing against for test purposes.
+
+You can then trigger a fake login to test with:
+```zsh
+curl -i localhost:8000/api/auth/fake-login -c jar.txt -X POST -H 'content-type: application/json' -d '{"persona": "leader"}'
+curl -i localhost:8000/api/me -b jar.txt
+```
+
+**Second Note** if you're running the SPA from Vite's dev server, you probably want a proxy entry `server.proxy: { "/api": "http://127.0.0.1:8000" }` so it behaves just like a real ~~boy~~ deployment. Otherwise you'll get weird CORS issues since the requests aren't proxied like they are on the live box.
+
+#### Real Login
+
+First of all, follow the instructions in the `README.md` at https://github.com/portland-dsa/botonio-botsci - it is not repeated here because it is *very* involved.
+
+In short, what you need on *this* end:
+
+- The **public key** from `cargo run -p discord-bot --example sso_keygen`. *Make sure this is the pair that matches `BOT_SSO_SIGNING_KEY` from the same run of that command*
+- The **bearer token** assigned to `BOT_SSO_CALLER_BEARER`
+- The **socket path** assigned to `BOT_SSO_SOCKET_PATH`
+- The **redirect URL** assigned to `BOT_SSO_REDIRECT_URI`
+- The **guild ID** assigned to `DISCORD_GUILD_ID` (the same guild your test bot is in)
+- The values from `.env` in the [Serving](#serving) section above
+- The database from [Serving](#serving) above up and migrated **on the same wsl or Linux instance as the bot**
+
+Note that the **redirect URL** is very important, because whatever `port` you put there is the same port you must run `rosadmin` on! So if you set it to `localhost:9999/api/auth/callback` you must run rosadmin with `--port 9999`.
+
+Set up your `.env` file like so:
+
+```
+BOTONIO_SSO_PUBLIC_KEY=<twin to BOT_SSO_SIGNING_KEY>
+BOTONIO_SSO_BEARER=<same as BOT_SSO_CALLER_BEARER>
+BOTONIO_SSO_SOCKET_PATH=<same as BOT_SSO_SOCKET_PATH>
+BOTONIO_SSO_GUILD_ID=<same as DISCORD_GUILD_ID>
+BOTONIO_SSO_AUD=rosadmin
+BOTONIO_SSO_ISS=botonio
+BOTONIO_SSO_KID=v1
+
+ROSADMIN_FAKE_LOGIN=1 # Optional
+ROSADMIN_DB_DSN="host=127.0.0.1 port=54432 dbname=rosadmin_dev user=rosadmin_app"
+
+ROSADMIN_AUDIT_HMAC_KEY=<from the serving section or `openssl rand -hex 32`>
+```
+
+Remember, this all *must* be done *either* in the *same* WSL instance, *or* on the same Linux box(/virtual machine)
+
+Now here's your takeoff checklist:
+- [ ] Run the **Bot**
+  - [ ] Have your `.env`, Guild, and Discord application set up as per the Botonio Botsci README
+  - [ ] Run the database from the `botonio-botsci` repo root with `podman compose -f deploy/test-infra/compose.yaml up -d`
+  - [ ] Migrate the database with `cargo sqlx migrate run --source crates/persistence/migrations`
+  - [ ] Run the bot with `cargo run --bin botonio-botsci`
+  - [ ] Run `/setup` in the Discord test server and set the options as in the Botonio Botsci README
+  - [ ] Ctrl+C to stop the bot (do NOT kill the database or you'll have to repeat the previous step)
+  - [ ] Run the bot with `cargo run --bin botonio-botsci`
+- [ ] Run **rosadmin**
+  - [ ] Have your `.env` set up as above
+  - [ ] Run the database from the `rosadmin` repo root with `podman compose -f deploy/test-infra/compose.yaml up -d`
+  - [ ] Migrate the database with `uv run yoyo apply -b --no-config-file -d postgresql+psycopg://rosadmin_app@127.0.0.1:54432/rosadmin_dev rosadmin/migrations`
+  - [ ] Run rosadmin with `uv run --env-file .env rosadmin serve --port <IMPORTANT THE SAME PORT AS BOT_SSO_REDIRECT_URI>`
+
+Now you can communicate via the API endpoints as per the specification, either by hosting the frontend, or with a browser. Note that `curl` isn't very useful because of a lack of ways to grab a Discord OAUTH authorization from the terminal (due to CSRF protection, you can't *start* a session from the terminal, then *finish* in the browser just to reuse the session state in the terminal).
+
+You can verify SSO works by logging in with `localhost:<PORT>/api/auth/begin`, then authorize your Discord account and, with luck, it will redirect you to a blank 404 at `localhost:<PORT>`.
+
+Phew, thanks for enduring this marathon. Luckily other than the bot `/setup` pain you really only need to do most of this once.
+
+**Reminder** if you're running the SPA from Vite's dev server and pointing it at the now running `rosadmin`, whether using SSO or `fake-login`, you probably want a proxy entry `server.proxy: { "/api": "http://127.0.0.1:<PORT>" }` so it behaves just like a real ~~boy~~ deployment. Otherwise you'll get weird CORS issues since the requests aren't proxied like they are on the live box. (Same reason starting in the terminal and then using the browser won't work).
 
 # Questions You Could Theoretically Ask
 

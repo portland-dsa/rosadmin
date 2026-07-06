@@ -29,9 +29,10 @@ class ProblemCode(StrEnum):
     MEMBER_NOT_FOUND = "member_not_found"
     UNKNOWN_PERSONA = "unknown_persona"
     NOT_CHAPTER_LEADER = "not_chapter_leader"
-    AUTH_NOT_IMPLEMENTED = "auth_not_implemented"
     INVALID_REQUEST = "invalid_request"
     FORBIDDEN_ORIGIN = "forbidden_origin"
+    READS_NOT_AVAILABLE = "reads_not_available"
+    RATE_LIMITED = "rate_limited"
     INTERNAL = "internal"
 
 

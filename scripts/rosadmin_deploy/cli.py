@@ -20,27 +20,44 @@ from che_deploya import (
     Check,
     Component,
     DeploySpec,
+    Environment,
     Secret,
     SharedRestart,
     Stages,
     StaticUnit,
+    TemplatedUnit,
     db,
 )
 from che_deploya.db import Db, Role
 
 
 class ServiceSecrets(StrEnum):
-    """The credentials the service unit loads: the audit HMAC key and the
-    migration role's scram password.
+    """The credentials the service unit loads: the audit HMAC key, the migration
+    role's scram password, and the botonio SSO bearer.
 
     Each member's value is the credential name the app reads from
     `$CREDENTIALS_DIRECTORY`, the `<name>.cred` filename, and the key in the
-    encrypted secrets file - so these must match `_audit_key` and
-    `_migrate_password` exactly.
+    encrypted secrets file - so these must match `_audit_key`, `_migrate_password`,
+    and `sso_bearer` exactly.
     """
 
     AuditHmacKey = "audit-hmac-key"
     DbMigrationPassword = "db_migration_password"
+    BotonioSsoBearer = "botonio_sso_bearer"
+
+
+class ServiceEnv(StrEnum):
+    """The non-secret botonio values templated into the staging override: the SSO
+    verifying key and the home guild id.
+
+    They live in the component's encrypted secrets file alongside the credentials
+    but are public, so they render into the unit as `Environment=` lines rather
+    than load as `.cred`s. Each member's value is both its key in that file and the
+    `${...}` placeholder it fills in the override template.
+    """
+
+    BotonioSsoPubkey = "botonio_sso_pubkey"
+    SsoGuildId = "sso_guild_id"
 
 
 ROSADMIN = DeploySpec(
@@ -63,10 +80,11 @@ ROSADMIN = DeploySpec(
                     src="{repo_root}/deploy/systemd/rosadmin@.socket",
                     dest="/etc/systemd/system/rosadmin@.socket",
                 ),
-                StaticUnit(
+                TemplatedUnit(
                     src="{repo_root}/deploy/systemd/rosadmin@{stage}.service.d/override.conf",
                     resource_loc="assets/rosadmin@{stage}.service.d/override.conf",
                     dest="/etc/systemd/system/rosadmin@{stage}.service.d/override.conf",
+                    env=Environment(names=frozenset(ServiceEnv)),
                     per_stage=True,
                 ),
             ],

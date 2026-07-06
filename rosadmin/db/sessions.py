@@ -14,7 +14,8 @@ import secrets
 
 from psycopg_pool import AsyncConnectionPool
 
-from rosadmin.web.sessions import ABSOLUTE_LIFETIME, IDLE_TIMEOUT, LeaderContext
+from rosadmin.sso import DiscordUserId
+from rosadmin.web.sessions import ABSOLUTE_LIFETIME, IDLE_TIMEOUT, Principal
 
 
 def _hash(token: str) -> bytes:
@@ -27,41 +28,29 @@ class PostgresSessionStore:
     def __init__(self, pool: AsyncConnectionPool) -> None:
         self._pool = pool
 
-    async def create(self, leader: LeaderContext) -> str:
+    async def create(self, principal: Principal) -> str:
         token = secrets.token_urlsafe(32)
         async with self._pool.connection() as conn:
             await conn.execute(
-                "INSERT INTO sessions "
-                "(token_hash, member_id, display_name, managed_group_ids) "
-                "VALUES (%s, %s, %s, %s)",
-                (
-                    _hash(token),
-                    leader.member_id,
-                    leader.display_name,
-                    list(leader.managed_group_ids),
-                ),
+                "INSERT INTO sessions (token_hash, discord_id) VALUES (%s, %s)",
+                (_hash(token), principal.discord_id),
             )
         return token
 
-    async def resolve(self, token: str) -> LeaderContext | None:
+    async def resolve(self, token: str) -> Principal | None:
         async with self._pool.connection() as conn:
             cursor = await conn.execute(
                 "UPDATE sessions SET last_seen_at = now() "
                 "WHERE token_hash = %s "
                 "  AND created_at > now() - %s "
                 "  AND last_seen_at > now() - %s "
-                "RETURNING member_id, display_name, managed_group_ids",
+                "RETURNING discord_id",
                 (_hash(token), ABSOLUTE_LIFETIME, IDLE_TIMEOUT),
             )
             row = await cursor.fetchone()
         if row is None:
             return None
-        member_id, display_name, group_ids = row
-        return LeaderContext(
-            member_id=member_id,
-            display_name=display_name,
-            managed_group_ids=frozenset(group_ids),
-        )
+        return Principal(discord_id=DiscordUserId(row[0]))
 
     async def revoke(self, token: str) -> None:
         async with self._pool.connection() as conn:

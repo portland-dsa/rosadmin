@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-import sys
-import uuid
-
 import psycopg
 import pytest
 
@@ -13,23 +9,12 @@ from rosadmin.db import make_pool
 from rosadmin.db.audit import PostgresAuditSink
 from rosadmin.db.sessions import PostgresSessionStore
 from rosadmin.membership.source import Standing
-from rosadmin.web.sessions import IDLE_TIMEOUT, LeaderContext
+from rosadmin.sso import DiscordUserId
+from rosadmin.web.sessions import IDLE_TIMEOUT, Principal
 
 pytestmark = pytest.mark.integration
 
-_LEADER = LeaderContext(
-    member_id=uuid.uuid4(), display_name="Ralsei", managed_group_ids=frozenset()
-)
-
-
-@pytest.fixture(scope="session", autouse=True)
-def event_loop_policy():
-    # psycopg's async pool cannot run under Windows' default ProactorEventLoop;
-    # it needs a selector loop. Linux (dev laptop and CI alike) keeps the
-    # default policy untouched.
-    if sys.platform == "win32":
-        return asyncio.WindowsSelectorEventLoopPolicy()
-    return asyncio.get_event_loop_policy()
+_PRINCIPAL = Principal(discord_id=DiscordUserId("123456789012345678"))
 
 
 async def _pool(dsn: str):
@@ -44,36 +29,17 @@ async def test_session_survives_a_fresh_store(database) -> None:
     # stand-in never could.
     pool = await _pool(database.app_dsn)
     try:
-        token = await PostgresSessionStore(pool).create(_LEADER)
-        assert await PostgresSessionStore(pool).resolve(token) == _LEADER
+        token = await PostgresSessionStore(pool).create(_PRINCIPAL)
+        assert await PostgresSessionStore(pool).resolve(token) == _PRINCIPAL
     finally:
         await pool.close()
-
-
-async def test_managed_group_ids_round_trip_preserves_uuids(database) -> None:
-    # A leader managing real bodies: the uuid[] column must come back as UUID
-    # objects (not strings) and preserve the exact set - an empty-set round trip
-    # would hide a type-mapping bug.
-    managed = frozenset({uuid.uuid4(), uuid.uuid4()})
-    leader = LeaderContext(
-        member_id=uuid.uuid4(), display_name="Ralsei", managed_group_ids=managed
-    )
-    pool = await _pool(database.app_dsn)
-    try:
-        store = PostgresSessionStore(pool)
-        resolved = await store.resolve(await store.create(leader))
-    finally:
-        await pool.close()
-    assert resolved is not None
-    assert resolved.managed_group_ids == managed
-    assert all(isinstance(gid, uuid.UUID) for gid in resolved.managed_group_ids)
 
 
 async def test_expired_session_resolves_to_none(database) -> None:
     pool = await _pool(database.app_dsn)
     try:
         store = PostgresSessionStore(pool)
-        token = await store.create(_LEADER)
+        token = await store.create(_PRINCIPAL)
         # Push last_seen past the idle window; Susie's stale session is refused.
         async with pool.connection() as conn:
             await conn.execute(

@@ -9,6 +9,9 @@ is one forward migration with an optional `.rollback.sql` companion.
   sessions, the jti replay cache, rate-limit counters, and the audit log.
 - `grant_app_role.sql` - the runtime role's least-privilege grants, to the
   `rosadmin_app` group role.
+- `reshape_sessions.sql` - reshapes `sessions` to carry the authenticated
+  Discord identity instead of the persona-era member/display-name/managed-group
+  columns.
 
 Roles are not here: they are cluster-global while migrations run per-database, so
 the roles themselves (the group `rosadmin_app`, each stage's login role, and the

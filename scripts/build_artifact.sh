@@ -36,14 +36,6 @@ cp -a "$py_install/." "$root/python/"
 rm -f "$root/python/lib/python$py/EXTERNALLY-MANAGED"
 uv pip install --python "$root/python/bin/python3" --system --no-cache .
 
-# 2b. Staging - and only staging, passed explicitly - additionally carries the
-#     development-only package (persona stubs and fake-login). Fail-closed: with no
-#     "staging" argument the package is absent, so a production build cannot include
-#     it by forgetting a flag. --no-deps because rosadmin is already installed above.
-if [ "${1:-}" = staging ]; then
-    uv pip install --python "$root/python/bin/python3" --system --no-cache --no-deps ./devtools
-fi
-
 # 3. Precompile bytecode so the read-only tree never attempts a .pyc write at runtime.
 "$root/python/bin/python3" -m compileall -q "$root/python" || true
 

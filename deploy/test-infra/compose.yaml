@@ -1,0 +1,50 @@
+# Throwaway PostgreSQL for local development.
+#
+# The database `serve` talks to when you run it by hand - sessions, the replay
+# cache, rate-limit counters, and the audit log. It holds NO real data and is safe
+# to wipe at any time: the data directory is an in-memory tmpfs, so every start is
+# a clean cluster. This is NOT the production database; the box's cluster is
+# provisioned separately with real hardening and credentials.
+#
+# The superuser is named `rosadmin_app` on purpose. The schema's grant migration
+# does `GRANT ... TO rosadmin_app`, so making that the login role means the target
+# role already exists - no init script or baked image to create it, which also
+# sidesteps podman not auto-mounting a mapped drive on Windows.
+#
+# Usage:
+#   podman compose -f deploy/test-infra/compose.yaml up -d
+#   uv run yoyo apply -b --no-config-file \
+#     -d postgresql+psycopg://rosadmin_app@127.0.0.1:54432/rosadmin_dev \
+#     rosadmin/migrations
+#   ROSADMIN_FAKE_LOGIN=1 \
+#     ROSADMIN_DB_DSN="host=127.0.0.1 port=54432 dbname=rosadmin_dev user=rosadmin_app" \
+#     uv run rosadmin serve
+#   podman compose -f deploy/test-infra/compose.yaml down
+
+services:
+  rosadmin_postgres:
+    # Fully qualified on purpose: native podman refuses a bare `postgres:18` unless
+    # the host defines unqualified-search registries, so name the registry here.
+    image: docker.io/library/postgres:18
+    environment:
+      # Throwaway/local only - NEVER production. Any local connection gets in with
+      # no password, which is what keeps the migrate/serve loop frictionless.
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_USER: rosadmin_app
+      POSTGRES_DB: rosadmin_dev
+      # Move the data dir out of the image's declared VOLUME (/var/lib/postgresql)
+      # so the tmpfs below mounts cleanly onto its own path. Also version-independent:
+      # the PG18 images put the default data dir in a major-versioned subdirectory.
+      PGDATA: /pgdata
+    ports:
+      # Loopback-only bind keeps this trust-auth database off the network. Host
+      # 54432 dodges a Postgres already on the host's 5432 and the bot's 55432.
+      - "127.0.0.1:54432:5432"
+    tmpfs:
+      # Ephemeral data: the cluster is rebuilt clean on every start.
+      - /pgdata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rosadmin_app -d rosadmin_dev"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

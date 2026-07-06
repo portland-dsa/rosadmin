@@ -10,6 +10,7 @@ rosadmin.staging.portlanddsa.org {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
 		Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'"
+		Referrer-Policy "no-referrer"
 		# Not load-bearing security, just noise reduction.
 		-Server
 	}
@@ -30,8 +31,16 @@ rosadmin.staging.portlanddsa.org {
 	# The API crosses to the backend over its unix socket. The socket's
 	# 0660 group is what authorizes this hop - caddy is a member; no other
 	# local user is. A 502 here means the backend socket is not up (yet).
+	#
+	# X-Real-Client-IP carries the connecting peer's address across that socket
+	# hop, so the backend's per-IP rate limiter has something to key on. This is
+	# safe only because trusted_proxies is unset above - caddy is the true edge,
+	# so {client_ip} is always the real peer here, never a forwarded header an
+	# outside client could forge.
 	handle /api/* {
-		reverse_proxy unix//run/rosadmin/staging/api.sock
+		reverse_proxy unix//run/rosadmin/staging/api.sock {
+			header_up X-Real-Client-IP {client_ip}
+		}
 	}
 
 	# Everything else is the static frontend tree.

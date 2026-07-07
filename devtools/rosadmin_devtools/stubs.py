@@ -59,25 +59,25 @@ class _Person:
 
 #: The fixture roster: who exists, in which membership state. Names come from the
 #: shared cast, so a persona reads the same here and in the served ST records.
-#: MALFORMED is absent on purpose - it has no email, so no email search can reach it.
+#: Malformed is absent on purpose - it has no email, so no email search can reach it.
 _ROSTER: tuple[_Person, ...] = (
-    _Person("ralsei@example.com", Persona.LEADER),
-    _Person("kris@example.com", Persona.GOOD_STANDING),
-    _Person("susie@example.com", Persona.LAPSED),
-    _Person("noelle@example.com", Persona.RETIRED_TIER),
-    _Person("berdly@example.com", Persona.NO_STATUS),
-    _Person("spamton@example.com", Persona.UNKNOWN_TIER),
+    _Person("ralsei@example.com", Persona.Leader),
+    _Person("kris@example.com", Persona.GoodStanding),
+    _Person("susie@example.com", Persona.Lapsed),
+    _Person("noelle@example.com", Persona.RetiredTier),
+    _Person("berdly@example.com", Persona.NoStatus),
+    _Person("spamton@example.com", Persona.UnknownTier),
 )
 
 #: Persona -> search status. Total over the roster's personas; the guard test pins
 #: totality so a new persona cannot silently fall through to not_found.
 _STATUS_BY_PERSONA: dict[Persona, str] = {
-    Persona.LEADER: "good_standing",
-    Persona.GOOD_STANDING: "good_standing",
-    Persona.LAPSED: "dues_expired",
-    Persona.NO_STATUS: "no_membership_status",
-    Persona.RETIRED_TIER: "malformed",
-    Persona.UNKNOWN_TIER: "malformed",
+    Persona.Leader: "good_standing",
+    Persona.GoodStanding: "good_standing",
+    Persona.Lapsed: "dues_expired",
+    Persona.NoStatus: "no_membership_status",
+    Persona.RetiredTier: "malformed",
+    Persona.UnknownTier: "malformed",
 }
 
 #: name, body_type, seeded member emails. One body_type is deliberately a value
@@ -92,7 +92,9 @@ _LEADER_EMAIL = "ralsei@example.com"
 
 
 class StubDirectory:
-    """The persona-backed `MemberDirectory`, plus the fake-login identity map."""
+    """The persona-backed `MemberDirectory` and `GroupModify`, plus the
+    fake-login identity map. One instance serves both ports so a mutation and
+    a later read see the same in-memory state."""
 
     def __init__(self) -> None:
         self._people = {p.email: p for p in _ROSTER}
@@ -105,11 +107,11 @@ class StubDirectory:
         for name, _body_type, seeded in _GROUPS:
             gid = _group_id(name)
             rows = {
-                _member_id(leader.email): self._entry(leader, Role.LEADER),
+                _member_id(leader.email): self._entry(leader, Role.Leader),
             }
             for email in seeded:
                 person = self._people[email]
-                rows[_member_id(person.email)] = self._entry(person, Role.MEMBER)
+                rows[_member_id(person.email)] = self._entry(person, Role.Member)
             self._members[gid] = rows
 
     def _entry(self, person: _Person, role: Role) -> GroupMember:
@@ -123,17 +125,17 @@ class StubDirectory:
     def principal_for(self, persona_name: str) -> Principal:
         person = next((p for p in _ROSTER if p.persona.value == persona_name), None)
         if person is None:
-            raise AppProblem(404, ProblemCode.UNKNOWN_PERSONA, "no such persona")
-        if person.persona is not Persona.LEADER:
+            raise AppProblem(404, ProblemCode.UnknownPersona, "no such persona")
+        if person.persona is not Persona.Leader:
             raise AppProblem(
-                403, ProblemCode.NOT_CHAPTER_LEADER, "persona is not a chapter leader"
+                403, ProblemCode.NotChapterLeader, "persona is not a chapter leader"
             )
         return Principal(discord_id=DiscordUserId(_stub_discord_id(person.email)))
 
     def _person(self, principal: Principal) -> _Person:
         person = self._by_discord.get(principal.discord_id)
         if person is None:
-            raise AppProblem(404, ProblemCode.NOT_FOUND, "unknown principal")
+            raise AppProblem(404, ProblemCode.NotFound, "unknown principal")
         return person
 
     def _managed_ids(self, principal: Principal) -> frozenset[uuid.UUID]:
@@ -141,7 +143,7 @@ class StubDirectory:
         person = self._person(principal)
         return (
             frozenset(self._group_meta)
-            if person.persona is Persona.LEADER
+            if person.persona is Persona.Leader
             else frozenset()
         )
 
@@ -192,7 +194,7 @@ class StubDirectory:
             group_id not in self._managed_ids(principal)
             or group_id not in self._members
         ):
-            raise AppProblem(404, ProblemCode.NOT_FOUND, "no such group")
+            raise AppProblem(404, ProblemCode.NotFound, "no such group")
 
     async def add_member(
         self, principal: Principal, group_id: uuid.UUID, member_id: uuid.UUID
@@ -202,10 +204,10 @@ class StubDirectory:
         if person is None or _STATUS_BY_PERSONA[person.persona] != "good_standing":
             # Only members surfaced by a good-standing search hit are addable;
             # everyone else is indistinguishable from nonexistent.
-            raise AppProblem(404, ProblemCode.MEMBER_NOT_FOUND, "no such member")
+            raise AppProblem(404, ProblemCode.MemberNotFound, "no such member")
         if member_id in self._members[group_id]:
-            raise AppProblem(409, ProblemCode.ALREADY_MEMBER, "already a member")
-        entry = self._entry(person, Role.MEMBER)
+            raise AppProblem(409, ProblemCode.AlreadyMember, "already a member")
+        entry = self._entry(person, Role.Member)
         self._members[group_id][member_id] = entry
         return entry
 
@@ -214,7 +216,5 @@ class StubDirectory:
     ) -> None:
         self._managed_group(principal, group_id)
         if member_id not in self._members[group_id]:
-            raise AppProblem(
-                404, ProblemCode.NOT_A_MEMBER, "not a member of this group"
-            )
+            raise AppProblem(404, ProblemCode.NotAMember, "not a member of this group")
         del self._members[group_id][member_id]

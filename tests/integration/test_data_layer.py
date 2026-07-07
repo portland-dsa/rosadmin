@@ -8,7 +8,7 @@ import pytest
 from rosadmin.db import make_pool
 from rosadmin.db.audit import PostgresAuditSink
 from rosadmin.db.sessions import PostgresSessionStore
-from rosadmin.membership.source import Standing
+from rosadmin.membership.source import LeadershipAssessment, Standing
 from rosadmin.sso import DiscordUserId
 from rosadmin.web.sessions import IDLE_TIMEOUT, Principal
 
@@ -86,4 +86,32 @@ async def test_member_standing_round_trips_as_enum(database) -> None:
         await pool.close()
     assert row is not None
     (standing,) = row
-    assert standing is Standing.GOOD_STANDING
+    assert standing is Standing.GoodStanding
+
+
+async def test_leadership_assessment_round_trips_and_defaults(database) -> None:
+    # Mirrors the standing round-trip above, extended for the second enum:
+    # Kris's row states the assessment explicitly, Noelle's leaves it out and
+    # falls to the column default rather than erroring.
+    with psycopg.connect(database.superuser_dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO members (st_id, email, standing, leadership_assessment)"
+            " VALUES (%s, %s, %s, %s)",
+            (8, "kris@example.com", "good_standing", "leader"),
+        )
+        conn.execute(
+            "INSERT INTO members (st_id, email, standing) VALUES (%s, %s, %s)",
+            (9, "noelle@example.com", "good_standing"),
+        )
+    pool = await _pool(database.app_dsn)
+    try:
+        async with pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT st_id, leadership_assessment FROM members ORDER BY st_id"
+            )
+            rows = await cursor.fetchall()
+    finally:
+        await pool.close()
+    assessments = dict(rows)
+    assert assessments[8] is LeadershipAssessment.Leader
+    assert assessments[9] is LeadershipAssessment.NonLeader

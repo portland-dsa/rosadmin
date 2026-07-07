@@ -137,12 +137,12 @@ DiscordUserId = NewType("DiscordUserId", str)
 
 
 class Standing(StrEnum):
-    """The verdict botonio signs into an assertion. Only `MEMBER` authorizes."""
+    """The verdict botonio signs into an assertion. Only `Member` authorizes."""
 
-    MEMBER = "member"
-    DUES_EXPIRED = "dues_expired"
-    UNVERIFIED = "unverified"
-    NOT_IN_GUILD = "not_in_guild"
+    Member = "member"
+    DuesExpired = "dues_expired"
+    Unverified = "unverified"
+    NotInGuild = "not_in_guild"
 
 
 class AssertionRejected(Exception):
@@ -205,7 +205,7 @@ class VerifiedAssertion:
 
     Proof of *authentication* - the signer vouches for this Discord id's standing
     at this instant. Not proof of access: the grant rule (`standing is
-    Standing.MEMBER` and the guild) is a separate, visible decision at the relay.
+    Standing.Member` and the guild) is a separate, visible decision at the relay.
     """
 
     discord_id: DiscordUserId

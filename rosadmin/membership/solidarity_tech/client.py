@@ -9,9 +9,11 @@ surfaced).
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 
 import httpx
 
+from rosadmin.credentials import read_credential
 from rosadmin.membership.errors import DecodeError, MalformedMember
 from rosadmin.membership.solidarity_tech.decode import decode_user
 from rosadmin.membership.source import Member
@@ -45,6 +47,46 @@ class SolidarityTechClient:
         )
         self._base_url = resolved.rstrip("/")
         self._client = client or httpx.AsyncClient()
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> SolidarityTechClient:
+        """Build a client from the environment, toggled by `SOLIDARITY_TECH_MOCK`.
+
+        This is a PII blast-radius interlock, not a write guard - the client is
+        read-only either way, so the only thing the toggle protects is which
+        roster (real members or fabricated personas) a pull can read.
+
+        Unset: real Solidarity Tech. The token is required (`read_credential` on
+        `solidarity_tech_token`/`SOLIDARITY_TECH_TOKEN`) - a targeted command must
+        not run tokenless - and the base URL takes the constructor's usual
+        real-API fallback.
+
+        Truthy: the mock. `SOLIDARITY_TECH_BASE_URL` is required - refusing to
+        guess a mock target rather than silently falling through to the real API
+        - and the token is optional, since the mock ignores auth.
+        """
+        if env.get("SOLIDARITY_TECH_MOCK"):
+            base_url = env.get("SOLIDARITY_TECH_BASE_URL")
+            if not base_url:
+                raise RuntimeError(
+                    "SOLIDARITY_TECH_MOCK is set but SOLIDARITY_TECH_BASE_URL is "
+                    "not; refusing to guess a mock target"
+                )
+            token = (
+                read_credential(env, "solidarity_tech_token", "SOLIDARITY_TECH_TOKEN")
+                or ""
+            )
+            return cls(token=token, base_url=base_url)
+
+        token = read_credential(env, "solidarity_tech_token", "SOLIDARITY_TECH_TOKEN")
+        if token is None:
+            raise RuntimeError(
+                "SOLIDARITY_TECH_TOKEN (or the solidarity_tech_token credential) is "
+                "not configured; refusing to run against the real API without one"
+            )
+        # Resolve the base URL from the passed mapping, not the process environment,
+        # so `from_env` honors its `env` argument consistently in both branches.
+        return cls(token=token, base_url=env.get("SOLIDARITY_TECH_BASE_URL"))
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"}

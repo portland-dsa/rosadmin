@@ -1,7 +1,7 @@
 """The single definition of the Solidarity Tech `/users` wire shape.
 
-Shared by the offline contract suite and (in a later plan) the persona mock, so
-the two cannot drift - a wire-shape change breaks one place.
+Shared by the offline contract suite and the persona mock, so the two cannot
+drift - a wire-shape change breaks one place.
 """
 
 from __future__ import annotations
@@ -16,7 +16,16 @@ def status_prop(label: str) -> list[dict[str, str]]:
     this select-field shape - the persona mock, the contract steps, and the decode unit
     tests all build it here, so the wire shape cannot drift between them.
     """
-    return [{"label": label, "value": "mock"}]
+    return select_prop(label)
+
+
+def select_prop(*labels: str) -> list[dict[str, str]]:
+    """A select custom-property value: one `{label, value}` per label.
+
+    The single owner of the leadership/flag select shape, mirroring `status_prop`;
+    the value is an opaque placeholder the decode ignores.
+    """
+    return [{"label": label, "value": "mock"} for label in labels]
 
 
 def user_json(
@@ -32,8 +41,8 @@ def user_json(
 
     `first_name`/`last_name`/`alternate_name` are the built-in top-level name
     fields. `alternate_name` is a chosen name: when present it is what to display
-    in place of `first_name` (which may be a legal or dead name). rosadmin does not
-    decode names yet - they ride the wire for staging fidelity.
+    in place of `first_name` (which may be a legal or dead name); the decode reads
+    all three.
     """
     return {
         "id": st_id,

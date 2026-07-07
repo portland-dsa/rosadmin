@@ -18,8 +18,8 @@ class ApiModel(BaseModel):
 class Role(StrEnum):
     """A member's standing within one group."""
 
-    LEADER = "leader"
-    MEMBER = "member"
+    Leader = "leader"
+    Member = "member"
 
 
 class Member(ApiModel):

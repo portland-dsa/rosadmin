@@ -60,11 +60,6 @@ def _build(context, assertion):
     )
 
 
-@given("botonio will complete with a member assertion for Ralsei")
-def step_member(context):
-    _build(context, lambda k: _assertion(k, standing="member"))
-
-
 @given("botonio will complete with a dues_expired assertion for Ralsei")
 def step_lapsed(context):
     _build(context, lambda k: _assertion(k, standing="dues_expired"))
@@ -95,23 +90,9 @@ def step_login(context):
     )
 
 
-@when("the same callback is replayed")
-def step_replay(context):
-    context.replay = context.client.get(
-        "/api/auth/callback",
-        params={"code": "c", "state": "s1"},
-        cookies={"rosadmin_sso_state": context.state or "s1"},
-    )
-
-
 @then("a session cookie is set")
 def step_cookie(context):
     assert context.response.cookies.get("rosadmin_session"), context.response.headers
-
-
-@then("the login audit records the Discord id")
-def step_audit(context):
-    assert any(r.action == "login" and r.actor == "777" for r in context.audit.records)
 
 
 @then("the replay is refused with no new session")
@@ -125,9 +106,9 @@ def step_failed(context):
     assert "login=failed" in context.response.headers.get("location", "")
 
 
-@then('the login is denied with reason "{reason}"')
-def step_denied(context, reason):
+@then("the login is denied with no reason")
+def step_denied(context):
+    location = context.response.headers.get("location", "")
     assert context.response.cookies.get("rosadmin_session") is None
-    assert f"login=denied&reason={reason}" in context.response.headers.get(
-        "location", ""
-    )
+    assert "login=denied" in location, location
+    assert "reason=" not in location, location

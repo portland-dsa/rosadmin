@@ -12,6 +12,10 @@ is one forward migration with an optional `.rollback.sql` companion.
 - `reshape_sessions.sql` - reshapes `sessions` to carry the authenticated
   Discord identity instead of the persona-era member/display-name/managed-group
   columns.
+- `add_leadership_assessment.sql` - adds the leadership cross-check to `members`:
+  the raw `is_chapter_leader` flag Solidarity Tech serves, the `alternate_name`
+  display override, and the derived `leadership_assessment` enum that materializes
+  the flag-versus-derived-bodies verdict so the login gate reads it in one lookup.
 
 Roles are not here: they are cluster-global while migrations run per-database, so
 the roles themselves (the group `rosadmin_app`, each stage's login role, and the

@@ -2,9 +2,10 @@ import type { Api } from './contract'
 import { mockApi } from './mock'
 import { httpApi } from './client'
 
-/* Default to the mock so the app runs with no backend; opt into the real one
-   with VITE_USE_MOCK=false. */
-const useMock = import.meta.env.VITE_USE_MOCK !== 'false'
+/* Live API by default in prod/staging, the mock in dev. Set VITE_USE_MOCK
+   (true/false) to flip either one. */
+const flag = import.meta.env.VITE_USE_MOCK
+const useMock = flag === undefined ? import.meta.env.DEV : flag === 'true'
 
 export const api: Api = useMock ? mockApi : httpApi
 

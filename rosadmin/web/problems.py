@@ -22,18 +22,19 @@ PROBLEM_MEDIA = "application/problem+json"
 class ProblemCode(StrEnum):
     """Machine-readable error codes; add members freely, never repurpose one."""
 
-    NOT_AUTHENTICATED = "not_authenticated"
-    NOT_FOUND = "not_found"
-    ALREADY_MEMBER = "already_member"
-    NOT_A_MEMBER = "not_a_member"
-    MEMBER_NOT_FOUND = "member_not_found"
-    UNKNOWN_PERSONA = "unknown_persona"
-    NOT_CHAPTER_LEADER = "not_chapter_leader"
-    INVALID_REQUEST = "invalid_request"
-    FORBIDDEN_ORIGIN = "forbidden_origin"
-    READS_NOT_AVAILABLE = "reads_not_available"
-    RATE_LIMITED = "rate_limited"
-    INTERNAL = "internal"
+    NotAuthenticated = "not_authenticated"
+    NotFound = "not_found"
+    AlreadyMember = "already_member"
+    NotAMember = "not_a_member"
+    MemberNotFound = "member_not_found"
+    UnknownPersona = "unknown_persona"
+    NotChapterLeader = "not_chapter_leader"
+    InvalidRequest = "invalid_request"
+    ForbiddenOrigin = "forbidden_origin"
+    ReadsNotAvailable = "reads_not_available"
+    MutationsNotAvailable = "mutations_not_available"
+    RateLimited = "rate_limited"
+    Internal = "internal"
 
 
 class AppProblem(Exception):
@@ -74,7 +75,7 @@ def install_handlers(app: FastAPI) -> None:
     async def _http_exception(
         request: Request, exc: StarletteHTTPException
     ) -> JSONResponse:
-        code = ProblemCode.NOT_FOUND if exc.status_code == 404 else ProblemCode.INTERNAL
+        code = ProblemCode.NotFound if exc.status_code == 404 else ProblemCode.Internal
         return _render(exc.status_code, code, str(exc.detail), None)
 
     @app.exception_handler(RequestValidationError)
@@ -82,5 +83,5 @@ def install_handlers(app: FastAPI) -> None:
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
         return _render(
-            422, ProblemCode.INVALID_REQUEST, "request body failed validation", str(exc)
+            422, ProblemCode.InvalidRequest, "request body failed validation", str(exc)
         )

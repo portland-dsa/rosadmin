@@ -32,6 +32,7 @@ from rosadmin.web.auth import auth_router, origin_guard
 from rosadmin.web.jti import JtiCache
 from rosadmin.web.problems import install_handlers
 from rosadmin.web.rate_limit import InMemoryRateLimiter, RateLimiter
+from rosadmin.web.records import RecordsDirectory
 from rosadmin.web.routes import api_router
 from rosadmin.web.sessions import SessionStore
 from rosadmin.web.settings import WebSettings, settings_from_env
@@ -64,6 +65,8 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.sso = sso_config_from_env(os.environ)
         app.state.jti_cache = PostgresJtiCache(pool)
         app.state.rate_limiter = PostgresRateLimiter(pool)
+        app.state.directory = RecordsDirectory(pool)
+        app.state.group_modify = None  # mutations are not wired yet
 
     systemd_notify.notify_ready()
 
@@ -139,6 +142,7 @@ def create_app(
     app.state.settings = settings
     app.state.pool = None
     app.state.directory = None
+    app.state.group_modify = None
     if session_store is not None:
         app.state.session_store = session_store
         app.state.audit_sink = audit_sink or RecordingAuditSink()
@@ -153,7 +157,9 @@ def create_app(
         # Imported inside the gate: the module does not exist in production.
         from rosadmin_devtools import StubDirectory, fake_login_router
 
-        app.state.directory = StubDirectory()
+        stub = StubDirectory()
+        app.state.directory = stub
+        app.state.group_modify = stub
         app.include_router(fake_login_router)
     return app
 

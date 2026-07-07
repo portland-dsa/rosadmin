@@ -108,7 +108,7 @@ def step_bearer(context):
 @then("one member in good standing is returned")
 def step_one_member(context):
     assert len(context.members) == 1
-    assert context.members[0].standing is Standing.GOOD_STANDING
+    assert context.members[0].standing is Standing.GoodStanding
 
 
 @then("{count:d} members are returned")

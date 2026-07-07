@@ -4,8 +4,8 @@ Every transient backend piece lives in Postgres - sessions, replay cache,
 rate limits, audit - so this package is the single door to it. The pool opens at
 service startup and closes at shutdown; the leaf modules (`sessions`, `audit`)
 hold the queries. The pool's per-connection `configure` registers the
-`member_standing` enum so it round-trips as the existing `Standing` type rather
-than a bare string.
+`member_standing` and `leadership_assessment` enums so each round-trips as its
+existing `Standing` / `LeadershipAssessment` type rather than a bare string.
 """
 
 from __future__ import annotations
@@ -16,11 +16,18 @@ from psycopg import AsyncConnection
 from psycopg.types.enum import EnumInfo, register_enum
 from psycopg_pool import AsyncConnectionPool
 
-from rosadmin.membership.source import Standing
+from rosadmin.membership.source import LeadershipAssessment, Standing
 
 _STANDING_LABELS = [
-    (Standing.GOOD_STANDING, "good_standing"),
-    (Standing.LAPSED, "lapsed"),
+    (Standing.GoodStanding, "good_standing"),
+    (Standing.Lapsed, "lapsed"),
+]
+
+_LEADERSHIP_ASSESSMENT_LABELS = [
+    (LeadershipAssessment.Leader, "leader"),
+    (LeadershipAssessment.NonLeader, "non_leader"),
+    (LeadershipAssessment.UnmarkedLeader, "unmarked_leader"),
+    (LeadershipAssessment.EmptyLeader, "empty_leader"),
 ]
 
 
@@ -51,8 +58,14 @@ async def _configure(conn: AsyncConnection) -> None:
     info = await EnumInfo.fetch(conn, "member_standing")
     if info is not None:
         register_enum(info, conn, Standing, mapping=_STANDING_LABELS)
+    info = await EnumInfo.fetch(conn, "leadership_assessment")
+    if info is not None:
+        register_enum(
+            info, conn, LeadershipAssessment, mapping=_LEADERSHIP_ASSESSMENT_LABELS
+        )
 
 
 def make_pool(dsn: str) -> AsyncConnectionPool:
-    """An unopened async pool that registers the `member_standing` enum per connection."""
+    """An unopened async pool that registers the `member_standing` and
+    `leadership_assessment` enums per connection."""
     return AsyncConnectionPool(dsn, open=False, configure=_configure)

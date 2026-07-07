@@ -9,6 +9,7 @@ from cyclopts import App, Parameter
 logging.basicConfig(level=logging.INFO)
 
 from rosadmin.commands.one_shot import one_shot_app
+from rosadmin.commands.roster import roster_app
 
 app = App(
     name="rosadmin",
@@ -16,6 +17,7 @@ app = App(
 )
 
 app.command(one_shot_app)
+app.command(roster_app)
 
 
 def _listen_target(env: Mapping[str, str]) -> int | None:

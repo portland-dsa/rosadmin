@@ -63,4 +63,4 @@ async def rate_limited(request: Request) -> None:
     limiter: RateLimiter = request.app.state.rate_limiter
     bucket = f"auth:{request.url.path}:{client_ip}"
     if await limiter.hit(bucket) > AUTH_RATE_LIMIT:
-        raise AppProblem(429, ProblemCode.RATE_LIMITED, "too many requests")
+        raise AppProblem(429, ProblemCode.RateLimited, "too many requests")

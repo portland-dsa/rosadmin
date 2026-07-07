@@ -4,7 +4,7 @@ import pytest
 
 from rosadmin.membership.errors import DecodeError, MalformedMember
 from rosadmin.membership.solidarity_tech.decode import decode_user
-from rosadmin.membership.source import Standing
+from rosadmin.membership.source import BodyType, Leadership, Standing
 from rosadmin.mock_st.personas import Persona
 from rosadmin.mock_st.roster import parse_map, records
 
@@ -14,8 +14,8 @@ def test_parse_map_skips_blank_unknown_and_keyless_entries():
         "kris@example.com=good_standing, susie@example.com=lapsed,,x@example.com=bogus,noequals"
     )
     assert parsed == [
-        ("kris@example.com", Persona.GOOD_STANDING),
-        ("susie@example.com", Persona.LAPSED),
+        ("kris@example.com", Persona.GoodStanding),
+        ("susie@example.com", Persona.Lapsed),
     ]
 
 
@@ -40,34 +40,58 @@ def test_personas_decode_to_their_intended_states():
     # decode to their Standing; retired_tier and malformed raise the errors the
     # lenient sweep skips.
     assert (
-        decode_user(Persona.GOOD_STANDING.user_json(1, "kris@example.com")).standing
-        is Standing.GOOD_STANDING
+        decode_user(Persona.GoodStanding.user_json(1, "kris@example.com")).standing
+        is Standing.GoodStanding
     )
     assert (
-        decode_user(Persona.LAPSED.user_json(2, "susie@example.com")).standing
-        is Standing.LAPSED
+        decode_user(Persona.Lapsed.user_json(2, "susie@example.com")).standing
+        is Standing.Lapsed
     )
     with pytest.raises(DecodeError):
-        decode_user(Persona.RETIRED_TIER.user_json(3, "noelle@example.com"))
+        decode_user(Persona.RetiredTier.user_json(3, "noelle@example.com"))
     with pytest.raises(MalformedMember):
-        decode_user(Persona.MALFORMED.user_json(4, "spamton@example.com"))
+        decode_user(Persona.Malformed.user_json(4, "spamton@example.com"))
 
 
 def test_new_personas_decode_to_their_intended_states():
-    # LEADER is an ordinary good-standing record to today's decoder; NO_STATUS and
-    # UNKNOWN_TIER raise the decode errors a lenient sweep skips.
+    # Leader is an ordinary good-standing record to today's decoder; NoStatus and
+    # UnknownTier raise the decode errors a lenient sweep skips.
     assert (
-        decode_user(Persona.LEADER.user_json(5, "ralsei@example.com")).standing
-        is Standing.GOOD_STANDING
+        decode_user(Persona.Leader.user_json(5, "ralsei@example.com")).standing
+        is Standing.GoodStanding
     )
     with pytest.raises(DecodeError):
-        decode_user(Persona.NO_STATUS.user_json(6, "berdly@example.com"))
+        decode_user(Persona.NoStatus.user_json(6, "berdly@example.com"))
     with pytest.raises(DecodeError):
-        decode_user(Persona.UNKNOWN_TIER.user_json(7, "spamton@example.com"))
+        decode_user(Persona.UnknownTier.user_json(7, "spamton@example.com"))
+
+
+def test_leader_persona_decodes_its_body_and_flag():
+    member = decode_user(Persona.Leader.user_json(8, "ralsei@example.com"))
+    assert member.is_chapter_leader is True
+    assert member.leads == frozenset({Leadership(BodyType.Committee, "Steering")})
+
+
+def test_co_leader_shares_the_leader_bodies():
+    member = decode_user(Persona.CoLeader.user_json(9, "noelle@example.com"))
+    assert member.is_chapter_leader is True
+    assert member.leads == frozenset({Leadership(BodyType.Committee, "Steering")})
+
+
+def test_marked_no_body_is_the_flag_with_no_leadership_anomaly():
+    member = decode_user(Persona.MarkedNoBody.user_json(10, "berdly@example.com"))
+    assert member.is_chapter_leader is True
+    assert member.leads == frozenset()
+
+
+def test_good_standing_persona_emits_no_leadership_fields():
+    member = decode_user(Persona.GoodStanding.user_json(11, "kris@example.com"))
+    assert member.is_chapter_leader is False
+    assert member.leads == frozenset()
 
 
 def test_records_carry_names_and_discord_id():
-    record = Persona.GOOD_STANDING.user_json(1, "kris@example.com")
+    record = Persona.GoodStanding.user_json(1, "kris@example.com")
     assert record["first_name"] == "Kris"
     assert record["last_name"] == "Dreemurr"
     assert record["alternate_name"] is None

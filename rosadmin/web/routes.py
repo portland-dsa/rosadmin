@@ -1,5 +1,6 @@
-"""The leader-facing resource routes. Every handler demands a directory and a
-session, in that order - see `require_directory`."""
+"""The leader-facing resource routes. Every handler demands its port (reads via
+`require_directory`, mutations via `require_group_modify`) and a session, in
+that order, so an unwired build's 501 does not depend on being logged in."""
 
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Path, Request
 
 from rosadmin.web.auth import require_session
-from rosadmin.web.directory import MemberDirectory
+from rosadmin.web.directory import GroupModify, MemberDirectory
 from rosadmin.web.models import (
     AddMemberRequest,
     Group,
@@ -34,9 +35,24 @@ def require_directory(request: Request) -> MemberDirectory:
     directory = request.app.state.directory
     if directory is None:
         raise AppProblem(
-            501, ProblemCode.READS_NOT_AVAILABLE, "reads are not yet available"
+            501, ProblemCode.ReadsNotAvailable, "reads are not yet available"
         )
     return directory
+
+
+def require_group_modify(request: Request) -> GroupModify:
+    """The stub/records mutator, or 501 when mutations are not yet wired.
+
+    Reads and mutations land on separate schedules, so this guard is
+    independent of `require_directory`: a build can serve real reads while
+    every mutation route still answers a stable 501.
+    """
+    modify = request.app.state.group_modify
+    if modify is None:
+        raise AppProblem(
+            501, ProblemCode.MutationsNotAvailable, "mutations are not yet available"
+        )
+    return modify
 
 
 @api_router.get("/healthz")
@@ -82,10 +98,10 @@ async def search_members(
 async def add_member(
     group_id: Annotated[UUID, Path(description="The group's unique ID.")],
     body: AddMemberRequest,
-    directory: MemberDirectory = Depends(require_directory),
+    modify: GroupModify = Depends(require_group_modify),
     principal: Principal = Depends(require_session),
 ) -> GroupMember:
-    return await directory.add_member(principal, group_id, body.member_id)
+    return await modify.add_member(principal, group_id, body.member_id)
 
 
 @api_router.delete("/groups/{group_id}/members/{member_id}", status_code=204)
@@ -94,7 +110,7 @@ async def remove_member(
     member_id: Annotated[
         UUID, Path(description="The member's unique ID within that group.")
     ],
-    directory: MemberDirectory = Depends(require_directory),
+    modify: GroupModify = Depends(require_group_modify),
     principal: Principal = Depends(require_session),
 ) -> None:
-    await directory.remove_member(principal, group_id, member_id)
+    await modify.remove_member(principal, group_id, member_id)

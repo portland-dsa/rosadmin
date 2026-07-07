@@ -64,7 +64,7 @@ def step_count(context, count):
 def step_lookup_member(context):
     result: Member | None = context.result
     assert result is not None
-    assert result.standing is Standing.GOOD_STANDING
+    assert result.standing is Standing.GoodStanding
 
 
 @then("the lookup returns no member")

@@ -1,16 +1,9 @@
 Feature: botonio SSO login relay
 
-  Scenario: Ralsei completes a login and gets a session
-    Given botonio will complete with a member assertion for Ralsei
-    When Ralsei begins and returns from the login
-    Then a session cookie is set
-    And the login audit records the Discord id
-
-  Scenario: Susie replays a spent assertion and is refused
-    Given botonio will complete with a member assertion for Ralsei
-    When Ralsei begins and returns from the login
-    And the same callback is replayed
-    Then the replay is refused with no new session
+  These scenarios exercise the SSO relay outcomes that never reach the records
+  gate: a verification failure, and a denial at the standing check. The gate's
+  own outcomes - a stored leader admitted, everyone else denied - live in
+  login_gate.feature, which needs a real records database.
 
   Scenario: Spamton returns a malformed assertion
     Given botonio will complete with a malformed assertion
@@ -25,4 +18,4 @@ Feature: botonio SSO login relay
   Scenario: a returning member with lapsed dues is denied by standing
     Given botonio will complete with a dues_expired assertion for Ralsei
     When Ralsei begins and returns from the login
-    Then the login is denied with reason "dues_expired"
+    Then the login is denied with no reason

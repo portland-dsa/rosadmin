@@ -112,7 +112,7 @@ def test_verify_accepts_a_valid_member_assertion():
     assert result == VerifiedAssertion(
         discord_id=DiscordUserId("12345"),
         guild="42",
-        standing=Standing.MEMBER,
+        standing=Standing.Member,
         jti="abc",
         exp=datetime.fromisoformat((_NOW + timedelta(seconds=30)).isoformat()),
     )
@@ -181,7 +181,7 @@ def test_verify_selects_the_key_named_by_the_kid():
 
     honest = sign_assertion(key_2, now=_NOW, kid="v2")
     assert (
-        verify_assertion(honest, keys, _SETTINGS, now=_NOW).standing is Standing.MEMBER
+        verify_assertion(honest, keys, _SETTINGS, now=_NOW).standing is Standing.Member
     )
 
     mismatched = sign_assertion(key_1, now=_NOW, kid="v2")

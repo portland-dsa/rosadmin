@@ -5,19 +5,49 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from rosadmin.membership.errors import DecodeError, MalformedMember, MembershipError
-from rosadmin.membership.source import Member, MembershipSource, Standing
+from rosadmin.membership.source import (
+    BodyType,
+    Leadership,
+    LeadershipAssessment,
+    Member,
+    MembershipSource,
+    Standing,
+    assess,
+)
 
 
 def test_member_is_frozen_and_carries_standing():
     m = Member(
         st_id=1,
         email="susie@example.com",
-        standing=Standing.GOOD_STANDING,
+        standing=Standing.GoodStanding,
+        discord_id=None,
+        first_name="Susie",
+        last_name="Gaster",
+        alternate_name=None,
+        is_chapter_leader=False,
+        leads=frozenset(),
     )
-    assert m.standing is Standing.GOOD_STANDING
+    assert m.standing is Standing.GoodStanding
     assert m.email == "susie@example.com"
     with pytest.raises(FrozenInstanceError):
         setattr(m, "email", "other@example.com")
+
+
+_BODY = frozenset({Leadership(BodyType.Committee, "Steering")})
+
+
+@pytest.mark.parametrize(
+    "flag,leads,expected",
+    [
+        (True, _BODY, LeadershipAssessment.Leader),
+        (False, frozenset(), LeadershipAssessment.NonLeader),
+        (False, _BODY, LeadershipAssessment.UnmarkedLeader),
+        (True, frozenset(), LeadershipAssessment.EmptyLeader),
+    ],
+)
+def test_assess_covers_the_grid(flag, leads, expected):
+    assert assess(flag, leads) == expected
 
 
 def test_error_tree_is_rooted():

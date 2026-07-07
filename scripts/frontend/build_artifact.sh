@@ -19,8 +19,8 @@ trap 'rm -rf "$build"' EXIT
 root="$build/frontend"
 
 # 1. Reproducible install (npm ci, not npm install) then the production build.
-#    No --base: the site is served from the domain root. No VITE_* env: the
-#    default build is mock-backed, which is intended for this artifact.
+#    No --base: the site is served from the domain root. No VITE_* env: a
+#    production build defaults to the live API.
 ( cd frontend && npm ci && npm run build )
 
 # 2. Stage the built assets as the tarball's single top-level directory. The

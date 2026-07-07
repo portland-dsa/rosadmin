@@ -1,18 +1,9 @@
 import type { Api } from './contract'
-import type {
-  Group,
-  GroupDetail,
-  GroupUpdate,
-  Member,
-  Role,
-  RosterMember,
-  SearchResult,
-  Session,
-} from '../types'
+import type { GroupDetail, Role, RosterMember, SearchOutcome, Session } from '../types'
 
-/* The whole-organization directory the add-by-email search looks through.
-   Ids are opaque and email is a separate field, matching the shape the real
-   backend returns. */
+/* The whole-organization directory the add-by-email search looks through. Ids are
+   opaque UUIDs and email is a separate field, matching the real backend. The names
+   are deliberately placeholder-shaped so no one mistakes them for real members. */
 type Person = { id: string; name: string; email: string }
 
 const directory: Person[] = [
@@ -38,6 +29,9 @@ const directory: Person[] = [
   },
 ]
 
+/* Not in the directory: searching this address exercises the dues-lapsed miss. */
+const LAPSED_EMAIL = 'lapsed@example.com'
+
 function person(id: string): Person {
   const p = directory.find((d) => d.id === id)
   if (!p) throw new Error(`mock: unknown member ${id}`)
@@ -48,6 +42,7 @@ function person(id: string): Person {
 type GroupSeed = {
   id: string
   name: string
+  bodyType: string
   members: { id: string; role: Role }[]
 }
 
@@ -55,6 +50,7 @@ const groups: Record<string, GroupSeed> = {
   communications: {
     id: 'communications',
     name: 'Communications Committee',
+    bodyType: 'Committee',
     members: [
       { id: '92e39c67-0854-4f5e-bc0e-5f66a603d55b', role: 'leader' },
       { id: '3c50ff78-8b5f-47e1-9e87-32c92519fae9', role: 'leader' },
@@ -72,6 +68,7 @@ const groups: Record<string, GroupSeed> = {
   electoral: {
     id: 'electoral',
     name: 'Electoral Working Group',
+    bodyType: 'Working Group',
     members: [
       { id: '92e39c67-0854-4f5e-bc0e-5f66a603d55b', role: 'leader' },
       { id: '2dab965f-1dc5-45d7-b04d-00d8de350e86', role: 'member' },
@@ -80,11 +77,9 @@ const groups: Record<string, GroupSeed> = {
   },
 }
 
-/* The mock's signed-in user: a leader of the groups above, so the "you" badge
+/* The mock's signed-in leader: a leader of the groups above, so the "you" badge
    and the leader-lock paths are exercised. */
-const SESSION: Session = {
-  member: { id: '92e39c67-0854-4f5e-bc0e-5f66a603d55b', name: 'Test NM' },
-}
+const SESSION: Session = { displayName: 'Test NM' }
 
 let loggedIn = false
 
@@ -105,8 +100,9 @@ async function getSession(): Promise<Session | null> {
   return delay(loggedIn ? SESSION : null)
 }
 
-function beginLogin(): void {
+async function beginLogin(): Promise<void> {
   loggedIn = true
+  await delay(null)
 }
 
 async function logout(): Promise<void> {
@@ -114,31 +110,39 @@ async function logout(): Promise<void> {
   await delay(null)
 }
 
-async function getBodies(): Promise<Group[]> {
-  return delay(Object.values(groups).map((g) => ({ id: g.id, name: g.name })))
+async function getGroups(): Promise<GroupDetail[]> {
+  return delay(
+    Object.values(groups).map((seed) => ({
+      id: seed.id,
+      name: seed.name,
+      bodyType: seed.bodyType,
+      members: rosterOf(seed),
+    })),
+  )
 }
 
-async function getBody(groupId: string): Promise<GroupDetail> {
-  const seed = groups[groupId]
-  if (!seed) throw new Error('You do not have access to this group.')
-  return delay({ id: seed.id, name: seed.name, members: rosterOf(seed) })
-}
-
-async function searchMembers(email: string): Promise<SearchResult> {
+async function searchMember(email: string): Promise<SearchOutcome> {
   const q = email.trim().toLowerCase()
-  const matches: Member[] = directory
-    .filter((p) => p.email.toLowerCase() === q)
-    .map((p) => ({ id: p.id, name: p.name, email: p.email }))
-  return delay({ matches })
+  const hit = directory.find((p) => p.email.toLowerCase() === q)
+  if (hit) {
+    return delay({ status: 'good_standing', member: { id: hit.id, name: hit.name, email: hit.email } })
+  }
+  if (q === LAPSED_EMAIL) return delay({ status: 'dues_expired' })
+  return delay({ status: 'not_found' })
 }
 
-async function updateMemberGroups(memberId: string, updates: GroupUpdate[]): Promise<void> {
-  for (const u of updates) {
-    const seed = groups[u.id]
-    if (!seed) throw new Error('The change failed.')
-    const without = seed.members.filter((m) => m.id !== memberId)
-    seed.members = u.remove ? without : [...without, { id: memberId, role: u.role }]
-  }
+async function addMember(groupId: string, memberId: string): Promise<RosterMember> {
+  const seed = groups[groupId]
+  if (!seed) throw new Error('The change failed.')
+  const p = person(memberId)
+  seed.members = [...seed.members.filter((m) => m.id !== memberId), { id: memberId, role: 'member' }]
+  return delay({ id: p.id, name: p.name, email: p.email, role: 'member' })
+}
+
+async function removeMember(groupId: string, memberId: string): Promise<void> {
+  const seed = groups[groupId]
+  if (!seed) throw new Error('The change failed.')
+  seed.members = seed.members.filter((m) => m.id !== memberId)
   await delay(null)
 }
 
@@ -146,8 +150,8 @@ export const mockApi: Api = {
   getSession,
   beginLogin,
   logout,
-  getBodies,
-  getBody,
-  searchMembers,
-  updateMemberGroups,
+  getGroups,
+  searchMember,
+  addMember,
+  removeMember,
 }

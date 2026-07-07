@@ -13,6 +13,7 @@ export type RosterMember = Member & {
 export type Group = {
   id: string
   name: string
+  bodyType: string
 }
 
 export type GroupDetail = Group & {
@@ -20,18 +21,17 @@ export type GroupDetail = Group & {
 }
 
 export type Session = {
-  member: {
-    id: string
-    name: string
-  }
+  displayName: string
 }
 
-export type SearchResult = {
-  matches: Member[]
-}
+/* Exact-email search resolves to a single addable member or a typed miss, so the
+   leader knows who to chase. The miss reasons are the backend's own vocabulary. */
+export type SearchMissReason =
+  | 'dues_expired'
+  | 'no_membership_status'
+  | 'malformed'
+  | 'not_found'
 
-export type GroupUpdate = {
-  id: string
-  role: Role
-  remove: boolean
-}
+export type SearchOutcome =
+  | { status: 'good_standing'; member: Member }
+  | { status: SearchMissReason }

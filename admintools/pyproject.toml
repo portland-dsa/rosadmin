@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rosadmin-admintools"
+version = "0.1.0"
+description = "The operator admin surface: body linking, pull trigger, persona relay. Never installed in a bare production wheel."
+requires-python = ">=3.13"
+dependencies = ["rosadmin"]
+
+[tool.uv.sources]
+rosadmin = { workspace = true }
+
+[tool.setuptools.packages.find]
+include = ["rosadmin_admintools*"]

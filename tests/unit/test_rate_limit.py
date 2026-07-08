@@ -12,6 +12,7 @@ from rosadmin.web.rate_limit import (
     AUTH_RATE_LIMIT,
     InMemoryRateLimiter,
     _client_ip,
+    _route_pattern,
     rate_limited,
 )
 from rosadmin.web.sessions import InMemorySessionStore
@@ -68,6 +69,36 @@ def test_callback_429s_past_the_limit():
     assert all(code != 429 for code in codes[:AUTH_RATE_LIMIT])
     assert codes[-1] == 429
     assert responses[-1].json()["code"] == "rate_limited"
+
+
+def test_the_bucket_keys_on_the_route_template_not_the_concrete_path():
+    # Two removes of different members must land in ONE bucket: keyed on the
+    # raw path, the member id in the URL would hand every target a fresh
+    # bucket and un-limit the endpoint entirely.
+    class _Route:
+        path_format = "/api/groups/{group_id}/members/{member_id}"
+
+    def request_for(concrete: str) -> Request:
+        return Request(
+            {
+                "type": "http",
+                "headers": [],
+                "client": ("1.2.3.4", 1),
+                "path": concrete,
+                "route": _Route(),
+            }
+        )
+
+    patterns = {
+        _route_pattern(request_for("/api/groups/g1/members/m1")),
+        _route_pattern(request_for("/api/groups/g1/members/m2")),
+    }
+    assert patterns == {"/api/groups/{group_id}/members/{member_id}"}
+
+
+def test_the_bucket_falls_back_to_the_path_with_no_matched_route():
+    request = Request({"type": "http", "headers": [], "path": "/api/nowhere"})
+    assert _route_pattern(request) == "/api/nowhere"
 
 
 def _request_with_no_client() -> Request:

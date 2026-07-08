@@ -37,6 +37,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "respx>=0.23.1",
+    "rosadmin-admintools",
     "rosadmin-devtools",
     "ruff>=0.15.20",
     "testcontainers>=4.9",
@@ -49,10 +50,11 @@ rosadmin = "rosadmin.cli:app"
 package = true
 
 [tool.uv.sources]
+rosadmin-admintools = { workspace = true }
 rosadmin-devtools = { workspace = true }
 
 [tool.uv.workspace]
-members = ["devtools"]
+members = ["devtools", "admintools"]
 
 # Package only the application; the repo root also holds non-package dirs (deploy/, scripts/,
 # tests/, docs/), and setuptools' flat-layout auto-discovery would otherwise refuse the build
@@ -75,7 +77,7 @@ select = ["I", "S608"]
 # Import order: __future__, stdlib, third-party, the google-api family as its
 # own cluster, then first-party - blank line between blocks.
 [tool.ruff.lint.isort]
-known-first-party = ["rosadmin", "rosadmin_devtools"]
+known-first-party = ["rosadmin", "rosadmin_admintools", "rosadmin_devtools"]
 section-order = ["future", "standard-library", "third-party", "google", "first-party", "local-folder"]
 
 [tool.ruff.lint.isort.sections]
@@ -91,9 +93,10 @@ markers = [
 
 [tool.pyright]
 reportMissingModuleSource = "none"
-# rosadmin_devtools is its own workspace package under devtools/, not a root-level
-# package, so add that directory to the type checker's import search path.
-extraPaths = ["devtools"]
+# rosadmin_devtools and rosadmin_admintools are their own workspace packages under
+# devtools/ and admintools/, not root-level packages, so add both directories to
+# the type checker's import search path.
+extraPaths = ["devtools", "admintools"]
 # scripts/rosadmin_deploy is a standalone uv project: it depends on che-deploya, which lives in
 # its own venv, not this one. It carries its own [tool.pyright] (Linux platform) and is checked
 # against its own environment - so keep it out of the application's type-check pass here.

@@ -1,14 +1,21 @@
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
+from psycopg_pool import AsyncConnectionPool
 
-from rosadmin import journal_send
+from rosadmin import journal_send, service
 from rosadmin.db.audit import RecordingAuditSink
-from rosadmin.service import _audit_key, _lifespan, create_app
+from rosadmin.service import _audit_key, _lifespan, _start_admin, create_app
 from rosadmin.web.sessions import InMemorySessionStore
 from rosadmin.web.settings import WebSettings
+
+#: `_start_admin`'s gate returns before ever touching the pool, so a stand-in
+#: object - cast to the type it never dereferences - is enough for the gating
+#: tests without opening a real database connection.
+_NO_POOL = cast(AsyncConnectionPool, object())
 
 
 def test_healthz_returns_ok():
@@ -87,6 +94,39 @@ def test_audit_failure_does_not_poison_committed_auth():
 
     logout = client.post("/api/auth/logout")
     assert logout.status_code == 204, logout.text
+
+
+async def test_admin_socket_unset_starts_no_admin_task():
+    # rosadmin-admintools is installed in this dev environment, so the only gate
+    # that can fail here is the env var - confirming the "package absent" half
+    # needs the separate monkeypatched case below.
+    assert await _start_admin(_NO_POOL, {}) is None
+
+
+async def test_admin_package_absent_starts_no_admin_task(monkeypatch):
+    monkeypatch.setattr(service.importlib.util, "find_spec", lambda name: None)
+    env = {"ROSADMIN_ADMIN_SOCKET": "/tmp/rosadmin-admin.sock"}
+    assert await _start_admin(_NO_POOL, env) is None
+
+
+async def test_mock_st_unset_starts_no_mock_server():
+    assert await service._start_mock_st({}) is None
+
+
+async def test_mock_st_without_a_base_url_refuses_to_boot():
+    with pytest.raises(RuntimeError, match="SOLIDARITY_TECH_BASE_URL"):
+        await service._start_mock_st({"SOLIDARITY_TECH_MOCK": "1"})
+
+
+async def test_mock_st_without_an_explicit_port_refuses_to_boot():
+    # The mock must bind exactly where the client will call; a portless base
+    # would leave the OS to pick one the client never reads.
+    env = {
+        "SOLIDARITY_TECH_MOCK": "1",
+        "SOLIDARITY_TECH_BASE_URL": "http://127.0.0.1",
+    }
+    with pytest.raises(RuntimeError, match="host and port"):
+        await service._start_mock_st(env)
 
 
 def test_resource_routes_501_without_a_directory():

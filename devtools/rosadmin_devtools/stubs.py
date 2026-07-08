@@ -205,7 +205,14 @@ class StubDirectory:
             # Only members surfaced by a good-standing search hit are addable;
             # everyone else is indistinguishable from nonexistent.
             raise AppProblem(404, ProblemCode.MemberNotFound, "no such member")
-        if member_id in self._members[group_id]:
+        existing = self._members[group_id].get(member_id)
+        if existing is not None:
+            # Same refusal contract as the records implementation: a leader
+            # target is its own answer, not a generic already-present.
+            if existing.role is Role.Leader:
+                raise AppProblem(
+                    409, ProblemCode.AlreadyLeader, "already a leader of this group"
+                )
             raise AppProblem(409, ProblemCode.AlreadyMember, "already a member")
         entry = self._entry(person, Role.Member)
         self._members[group_id][member_id] = entry
@@ -215,6 +222,13 @@ class StubDirectory:
         self, principal: Principal, group_id: uuid.UUID, member_id: uuid.UUID
     ) -> None:
         self._managed_group(principal, group_id)
-        if member_id not in self._members[group_id]:
+        entry = self._members[group_id].get(member_id)
+        if entry is None:
             raise AppProblem(404, ProblemCode.NotAMember, "not a member of this group")
+        if entry.role is Role.Leader:
+            raise AppProblem(
+                403,
+                ProblemCode.LeaderNotRemovable,
+                "leaders are managed by the membership records, not the panel",
+            )
         del self._members[group_id][member_id]

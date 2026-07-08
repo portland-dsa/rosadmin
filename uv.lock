@@ -9,6 +9,7 @@ resolution-markers = [
 [manifest]
 members = [
     "rosadmin",
+    "rosadmin-admintools",
     "rosadmin-devtools",
 ]
 
@@ -1231,6 +1232,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "respx" },
+    { name = "rosadmin-admintools" },
     { name = "rosadmin-devtools" },
     { name = "ruff" },
     { name = "testcontainers" },
@@ -1266,10 +1268,22 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "respx", specifier = ">=0.23.1" },
+    { name = "rosadmin-admintools", editable = "admintools" },
     { name = "rosadmin-devtools", editable = "devtools" },
     { name = "ruff", specifier = ">=0.15.20" },
     { name = "testcontainers", specifier = ">=4.9" },
 ]
+
+[[package]]
+name = "rosadmin-admintools"
+version = "0.1.0"
+source = { editable = "admintools" }
+dependencies = [
+    { name = "rosadmin" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "rosadmin", editable = "." }]
 
 [[package]]
 name = "rosadmin-devtools"

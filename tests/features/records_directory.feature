@@ -29,3 +29,11 @@ Feature: Records-backed reads over live HTTP
   Scenario: A mutation route answers 501 in the deployed shape while mutations are unwired
     When a client attempts to add a member without mutations wired
     Then the mutation is refused because mutations are not available
+
+  Scenario: Fake-login resolves a persona against the pulled records
+    When Ralsei fake-logs-in against records as persona "leader"
+    Then the fake login answers 200 with display name "Ralsei Fluffington"
+
+  Scenario: Fake-login against records refuses a persona who is not a chapter leader
+    When Ralsei fake-logs-in against records as persona "lapsed"
+    Then the fake login is refused with "not_chapter_leader"

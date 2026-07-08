@@ -20,6 +20,7 @@ from rosadmin.web.models import (
     SearchResponse,
 )
 from rosadmin.web.problems import AppProblem, ProblemCode
+from rosadmin.web.rate_limit import rate_limited
 from rosadmin.web.sessions import Principal
 
 api_router = APIRouter(prefix="/api")
@@ -93,7 +94,10 @@ async def search_members(
 
 
 @api_router.post(
-    "/groups/{group_id}/members", response_model=GroupMember, status_code=201
+    "/groups/{group_id}/members",
+    response_model=GroupMember,
+    status_code=201,
+    dependencies=[Depends(rate_limited)],
 )
 async def add_member(
     group_id: Annotated[UUID, Path(description="The group's unique ID.")],
@@ -104,7 +108,11 @@ async def add_member(
     return await modify.add_member(principal, group_id, body.member_id)
 
 
-@api_router.delete("/groups/{group_id}/members/{member_id}", status_code=204)
+@api_router.delete(
+    "/groups/{group_id}/members/{member_id}",
+    status_code=204,
+    dependencies=[Depends(rate_limited)],
+)
 async def remove_member(
     group_id: Annotated[UUID, Path(description="The group's unique ID.")],
     member_id: Annotated[

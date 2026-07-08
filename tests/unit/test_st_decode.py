@@ -135,3 +135,21 @@ def test_discord_id_decodes_from_numeric_string():
     props = _good_standing_props(**{"discord-user-id": "900000000000000042"})
     user = user_json(25, "kris@example.com", props)
     assert decode_user(user).discord_id == 900000000000000042
+
+
+def test_alternate_email_decodes_when_present():
+    props = _good_standing_props(**{"alternate-email": "kris.drive@gmail.com"})
+    user = user_json(26, "kris@example.com", props)
+    assert decode_user(user).alternate_email == "kris.drive@gmail.com"
+
+
+def test_alternate_email_absent_decodes_to_none():
+    user = user_json(27, "susie@example.com", _good_standing_props())
+    assert decode_user(user).alternate_email is None
+
+
+@pytest.mark.parametrize("garbage", ["not-an-address", "", 12345])
+def test_alternate_email_without_an_at_sign_decodes_to_none(garbage):
+    props = _good_standing_props(**{"alternate-email": garbage})
+    user = user_json(28, "noelle@example.com", props)
+    assert decode_user(user).alternate_email is None

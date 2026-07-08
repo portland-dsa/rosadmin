@@ -53,8 +53,8 @@ def _dsn(container: PostgresContainer, *, user: str, password: str, dbname: str)
     return f"host={host} port={port} dbname={dbname} user={user} password={password}"
 
 
-_CONNECT_ATTEMPTS = 10
-_CONNECT_DELAY = 0.5  # seconds between attempts
+_CONNECT_ATTEMPTS = 30
+_CONNECT_DELAY = 1.0  # seconds between attempts
 _CONNECT_TIMEOUT = 5  # libpq connect_timeout, seconds per attempt
 
 
@@ -174,3 +174,15 @@ def truncate(db: Db) -> None:
     statement = "TRUNCATE " + ", ".join(_TABLES) + " RESTART IDENTITY CASCADE"
     with _connect(db.superuser_dsn) as conn:
         conn.execute(statement)
+
+
+def one_row[R](cursor: psycopg.Cursor[R]) -> R:
+    """The single row a RETURNING or aggregate query must yield.
+
+    `fetchone` is Optional by type; a seed or count query that yields nothing
+    is a broken test, so this narrows and fails loudly in one place instead of
+    each call site re-asserting.
+    """
+    row = cursor.fetchone()
+    assert row is not None
+    return row

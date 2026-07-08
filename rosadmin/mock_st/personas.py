@@ -3,8 +3,9 @@
 A `Persona` is a coherent membership state; its `user_json` output decodes through
 the real Solidarity Tech decoder exactly as a live record would (pinned by the guard
 test in `tests/unit/test_mock_st.py`). The decoder reads email, membership-status, names, the Discord id, the
-chapter-leader flag, and the leadership fields; the bot's `amber` and
-`email_verify` personas stay dropped, and no date or dues properties are emitted.
+chapter-leader flag, the leadership fields, and the alternate-email property;
+the bot's `amber` and `email_verify` personas stay dropped, and no date or
+dues properties are emitted.
 """
 
 from __future__ import annotations
@@ -45,6 +46,9 @@ class Persona(Enum):
     CoLeader = "co_leader"
     #: The flag set with no leadership body behind it - the EmptyLeader anomaly.
     MarkedNoBody = "marked_no_body"
+    #: A good-standing member whose primary is not a gmail but whose alternate-email
+    #: property is - the sync_email rule's alternate-wins case.
+    AltGmail = "alt_gmail"
 
     @classmethod
     def parse(cls, name: str) -> Persona | None:
@@ -54,11 +58,22 @@ class Persona(Enum):
         except ValueError:
             return None
 
-    def user_json(self, st_id: int, email: str) -> dict[str, Any]:
-        """This persona's served `/users` record. `Malformed` ignores `email`."""
+    def user_json(
+        self, st_id: int, email: str, discord_id: str | None = None
+    ) -> dict[str, Any]:
+        """This persona's served `/users` record. `Malformed` ignores `email`.
+
+        `discord_id` replaces the synthetic snowflake when given - the staging
+        path, where a record must match the Discord account a real SSO login
+        hands back.
+        """
         if self is Persona.Malformed:
             return _user_json(st_id, None, {})
-        props: dict[str, Any] = {"discord-user-id": str(_DISCORD_ID_BASE + st_id)}
+        props: dict[str, Any] = {
+            "discord-user-id": (
+                discord_id if discord_id is not None else str(_DISCORD_ID_BASE + st_id)
+            )
+        }
         if self is not Persona.NoStatus:
             props["membership-status"] = status_prop(self._label())
         for field, label in _LEADS_BY_PERSONA.get(self, ()):
@@ -66,6 +81,8 @@ class Persona(Enum):
         if self in _CHAPTER_LEADER_PERSONAS:
             props["is-chapter-leader"] = select_prop("Yes")
         ident = identity_for(email)
+        if _ALT_EMAIL_BY_PERSONA.get(self, False):
+            props["alternate-email"] = f"{ident.handle}.drive@gmail.com"
         return _user_json(
             st_id,
             email,
@@ -94,6 +111,7 @@ _STANDING_BY_PERSONA: dict[Persona, Standing] = {
     Persona.Leader: Standing.GoodStanding,
     Persona.CoLeader: Standing.GoodStanding,
     Persona.MarkedNoBody: Standing.GoodStanding,
+    Persona.AltGmail: Standing.GoodStanding,
 }
 
 #: Leadership bodies each leadership persona holds, as (field, label) pairs.
@@ -109,3 +127,9 @@ _LEADS_BY_PERSONA: dict[Persona, tuple[tuple[str, str], ...]] = {
 _CHAPTER_LEADER_PERSONAS: frozenset[Persona] = frozenset(
     {Persona.Leader, Persona.CoLeader, Persona.MarkedNoBody}
 )
+
+#: Personas whose record emits an alternate-email property, mirroring
+#: _LEADS_BY_PERSONA's shape - the gmail itself is derived from the cast identity.
+_ALT_EMAIL_BY_PERSONA: dict[Persona, bool] = {
+    Persona.AltGmail: True,
+}

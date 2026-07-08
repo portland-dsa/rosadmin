@@ -16,6 +16,15 @@ is one forward migration with an optional `.rollback.sql` companion.
   the raw `is_chapter_leader` flag Solidarity Tech serves, the `alternate_name`
   display override, and the derived `leadership_assessment` enum that materializes
   the flag-versus-derived-bodies verdict so the login gate reads it in one lookup.
+- `add_mutation_columns.sql` - the columns the group-mutation write path needs:
+  the leader/member Google group emails on `leadership_bodies` (both-or-neither),
+  manual-add provenance on `body_memberships` (attribution requires a timestamp),
+  and `members.alternate_email` for the Solidarity Tech custom property.
+- `narrow_body_update_grant.sql` - restates `rosadmin_app`'s UPDATE on
+  `leadership_bodies` as column-scoped. `grant_app_role.sql` was edited in
+  place after some databases had already applied it with a broader UPDATE;
+  since yoyo never re-runs an applied migration, this carries the narrower
+  grant forward everywhere.
 
 Roles are not here: they are cluster-global while migrations run per-database, so
 the roles themselves (the group `rosadmin_app`, each stage's login role, and the

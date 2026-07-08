@@ -6,17 +6,30 @@ import logging
 import os
 
 from cyclopts import App
+from psycopg_pool import AsyncConnectionPool
 
 from rosadmin.db import dsn_from_env, make_pool
-from rosadmin.db.roster import pull_roster
+from rosadmin.db.roster import PullReport, pull_roster
 from rosadmin.membership.solidarity_tech.client import SolidarityTechClient
-from rosadmin.membership.source import ANOMALY_WARNING
+from rosadmin.membership.source import ANOMALY_WARNING, MembershipSource
 
 logger = logging.getLogger(__name__)
 
 roster_app = App(
     name="roster", help="Materialize Solidarity Tech membership into Postgres."
 )
+
+
+async def run_pull(pool: AsyncConnectionPool, source: MembershipSource) -> PullReport:
+    """Read `source`'s whole roster and materialize it into `pool`.
+
+    The composition the CLI and the admin socket's pull trigger share; callers
+    own `source` and `pool`'s lifecycles (opening/closing the pool, closing the
+    source's client) on their own terms, since the CLI's are dedicated to one
+    run while the admin route reuses the service's already-open pool.
+    """
+    members = await source.list_members()
+    return await pull_roster(pool, members)
 
 
 @roster_app.command(name="pull")
@@ -31,8 +44,7 @@ async def roster_pull() -> None:
     pool = make_pool(dsn_from_env(os.environ))
     await pool.open()
     try:
-        members = await source.list_members()
-        report = await pull_roster(pool, members)
+        report = await run_pull(pool, source)
     finally:
         await pool.close()
         await source.aclose()

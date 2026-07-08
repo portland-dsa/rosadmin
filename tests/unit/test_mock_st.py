@@ -6,7 +6,7 @@ from rosadmin.membership.errors import DecodeError, MalformedMember
 from rosadmin.membership.solidarity_tech.decode import decode_user
 from rosadmin.membership.source import BodyType, Leadership, Standing
 from rosadmin.mock_st.personas import Persona
-from rosadmin.mock_st.roster import parse_map, records
+from rosadmin.mock_st.roster import RosterEntry, parse_map, records
 
 
 def test_parse_map_skips_blank_unknown_and_keyless_entries():
@@ -14,9 +14,23 @@ def test_parse_map_skips_blank_unknown_and_keyless_entries():
         "kris@example.com=good_standing, susie@example.com=lapsed,,x@example.com=bogus,noequals"
     )
     assert parsed == [
-        ("kris@example.com", Persona.GoodStanding),
-        ("susie@example.com", Persona.Lapsed),
+        RosterEntry("kris@example.com", Persona.GoodStanding),
+        RosterEntry("susie@example.com", Persona.Lapsed),
     ]
+
+
+def test_parse_map_reads_a_discord_id_override_and_skips_a_garbled_one():
+    parsed = parse_map(
+        "zoopgoop@example.com=leader:123456789012345678,spamton@example.com=leader:kromer"
+    )
+    assert parsed == [
+        RosterEntry("zoopgoop@example.com", Persona.Leader, "123456789012345678")
+    ]
+
+
+def test_an_overridden_discord_id_lands_on_the_served_record():
+    (row,) = records(parse_map("zoopgoop@example.com=leader:123456789012345678"))
+    assert row["custom_user_properties"]["discord-user-id"] == "123456789012345678"
 
 
 def test_empty_map_is_an_empty_roster():
@@ -88,6 +102,12 @@ def test_good_standing_persona_emits_no_leadership_fields():
     member = decode_user(Persona.GoodStanding.user_json(11, "kris@example.com"))
     assert member.is_chapter_leader is False
     assert member.leads == frozenset()
+
+
+def test_alt_gmail_persona_decodes_a_gmail_alternate():
+    member = decode_user(Persona.AltGmail.user_json(12, "kris@example.com"))
+    assert member.standing is Standing.GoodStanding
+    assert member.alternate_email == "kris.drive@gmail.com"
 
 
 def test_records_carry_names_and_discord_id():

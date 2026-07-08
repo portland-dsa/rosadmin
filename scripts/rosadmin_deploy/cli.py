@@ -33,17 +33,19 @@ from che_deploya.db import Db, Role
 
 class ServiceSecrets(StrEnum):
     """The credentials the service unit loads: the audit HMAC key, the migration
-    role's scram password, and the botonio SSO bearer.
+    role's scram password, the botonio SSO bearer, and the Google DWD key.
 
     Each member's value is the credential name the app reads from
     `$CREDENTIALS_DIRECTORY`, the `<name>.cred` filename, and the key in the
     encrypted secrets file - so these must match `_audit_key`, `_migrate_password`,
-    and `sso_bearer` exactly.
+    and `sso_bearer` exactly. The DWD key is the raw service-account JSON; the
+    unit's `CREDENTIALS_FILE` env points the app at its delivered path.
     """
 
     AuditHmacKey = "audit-hmac-key"
     DbMigrationPassword = "db_migration_password"
     BotonioSsoBearer = "botonio_sso_bearer"
+    GoogleDwdKey = "google-dwd-key"
 
 
 class ServiceEnv(StrEnum):
@@ -58,6 +60,13 @@ class ServiceEnv(StrEnum):
 
     BotonioSsoPubkey = "botonio_sso_pubkey"
     SsoGuildId = "sso_guild_id"
+    #: The Workspace user the DWD service account impersonates - an org address,
+    #: kept out of the committed template for member-privacy consistency.
+    GoogleDwdSubject = "google_dwd_subject"
+    #: The mock roster staging boots with. Held in the secrets file rather than
+    #: the committed template because its entries name real personal emails
+    #: (the testers' own accounts) - same privacy line as the subject above.
+    StMockPersonas = "st_mock_personas"
 
 
 ROSADMIN = DeploySpec(

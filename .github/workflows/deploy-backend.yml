@@ -11,6 +11,7 @@ on:
         # unrelated push to main (frontend, docs) creates no run at all.
         paths:
             - "rosadmin/**"
+            - "admintools/**"
             - "devtools/**"
             - "pyproject.toml"
             - "uv.lock"
@@ -31,7 +32,9 @@ jobs:
               with:
                   version: "0.11.16"
             - name: Build relocatable artifact
-              run: bash scripts/build_artifact.sh
+              # ./admintools bakes the operator admin surface into this staging
+              # flavor; a future production build omits it.
+              run: bash scripts/build_artifact.sh ./admintools
             - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
               with:
                   name: rosadmin-${{ github.sha }}

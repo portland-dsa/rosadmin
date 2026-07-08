@@ -15,8 +15,8 @@ Feature: Ralsei mends and Susie breaks Google groups against mocked APIs
     When Ralsei hydrates "existing@example.com"
     Then the hydrated group has id "g2" and name "Existing"
 
-  Scenario: Adding a member waits until membership is visible
-    Given the Google APIs confirm a member after one visibility retry
+  Scenario: Adding a member trusts the mutation response alone
+    Given the Google APIs accept a member insert and nothing more
     When Ralsei adds "noelle@example.com" to the group
     Then the operation succeeds
 

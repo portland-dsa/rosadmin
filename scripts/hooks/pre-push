@@ -32,7 +32,7 @@ fi
 echo "pre-push: running live suites (use 'git push --no-verify' to skip)..."
 
 if [ "$have_google" = true ]; then
-  uv run rosadmin one-shot test-group-lifecycle
+  uv run pytest -m credentials
 fi
 
 # Live behave suites are gated by the @live tag and the environment.py credential

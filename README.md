@@ -52,18 +52,10 @@ If you want to test the program, set one of two environment variables:
 
 After you set that environment variable, run:
 ```zsh
-uv run rosadmin one-shot test-group-lifecycle
+uv run pytest -m credentials
 ```
 
-With luck, this will create a group for you, add a member, then grab the group info to print and delete the group. If this crashes after creating the group (say you forgot to enable the Cloud Identity API), it's smart enough to delete it at the start before trying again, so don't worry about doing that manually.
-
-If you don't want to delete the test group at the end (say you want to go into the admin panel and inspect it), you can run
-
-```zsh
-uv run rosadmin one-shot test-group-lifecycle --delete-at-end=False
-```
-
-Just make sure to delete the group manually if you don't want it there.
+With luck, this will create a group for you, add a member, list it back, remove the member, verify the settings and labels, then delete the group in a `finally` - the full live arc against your real Workspace tenant, gated behind the `credentials` marker so it never runs by accident. It uses `replace_if_exists`, so a group left behind by a crashed prior run (say you forgot to enable the Cloud Identity API) doesn't block a retry.
 
 ## Setting up the **Dev** Environment
 
@@ -110,7 +102,17 @@ Then, set up a `.env` file as such:
 ```
 ROSADMIN_DB_DSN="host=127.0.0.1 port=54432 dbname=rosadmin_dev user=rosadmin_app"
 ROSADMIN_AUDIT_HMAC_KEY=<the key from openssl>
+ROSADMIN_GOOGLE_DRY_RUN=1
+ROSADMIN_EXPECT_EXAMPLE_EMAILS=1
+
+SOLIDARITY_TECH_MOCK_PERSONAS=ralsei@example.com=leader,susie@example.com=good_standing
+SOLIDARITY_TECH_BASE_URL=http://127.0.0.1:8001
+SOLIDARITY_TECH_MOCK=1
 ```
+
+- `ROSADMIN_GOOGLE_DRY_RUN=1` is what lets the service boot without Google Workspace credentials: the Google mirror deliberately refuses to start half-configured, so with no dry-run flag you must supply `ROSADMIN_GOOGLE_SUBJECT` plus a service-account key. For local development you almost always want dry-run, which logs what it would have done instead of calling Google.
+- `SOLIDARITY_TECH_BASE_URL` and `SOLIDARITY_TECH_MOCK` runs the *mock* Solidarity Tech server so you can test against mocked records. See the [Admin Socket](#admin-socket) section for actual details (including info on the `SOLIDARITY_TECH_MOCK_PERSONAS` line)
+- `ROSADMIN_EXPECT_EXAMPLE_EMAILS` - treats `@example.com` as emails real emails that refuse to send to Google. In terms of the program functioning, this is technically redundant with `ROSADMIN_GOOGLE_DRY_RUN` set, but it's good too have anyway.
 
 Now you can launch `rosadmin`:
 ```zsh
@@ -120,6 +122,8 @@ uv run --env-file .env rosadmin serve --port <port>
 Note that to do anything useful you should follow the steps in `SSO Flow` below.
 
 ### SSO Flow
+
+This section covers the setup for the *authentication* flow; if you need *authorization* see some options in [Admin Socket](#admin-socket).
 
 #### Fake Login
 
@@ -178,6 +182,7 @@ ROSADMIN_FAKE_LOGIN=1 # Optional
 ROSADMIN_DB_DSN="host=127.0.0.1 port=54432 dbname=rosadmin_dev user=rosadmin_app"
 
 ROSADMIN_AUDIT_HMAC_KEY=<from the serving section or `openssl rand -hex 32`>
+ROSADMIN_GOOGLE_DRY_RUN=1 # See Serving above; omit only if testing the real Google mirror
 ```
 
 Remember, this all *must* be done *either* in the *same* WSL instance, *or* on the same Linux box(/virtual machine)
@@ -204,6 +209,10 @@ You can verify SSO works by logging in with `localhost:<PORT>/api/auth/begin`, t
 Phew, thanks for enduring this marathon. Luckily other than the bot `/setup` pain you really only need to do most of this once.
 
 **Reminder** if you're running the SPA from Vite's dev server and pointing it at the now running `rosadmin`, whether using SSO or `fake-login`, you probably want a proxy entry `server.proxy: { "/api": "http://127.0.0.1:<PORT>" }` so it behaves just like a real ~~boy~~ deployment. Otherwise you'll get weird CORS issues since the requests aren't proxied like they are on the live box. (Same reason starting in the terminal and then using the browser won't work).
+
+## Admin Socket
+
+The above covers *authentication*. 
 
 # Questions You Could Theoretically Ask
 

@@ -10,9 +10,9 @@ the central type and `GoogleGroupBuilder` for creating new remote groups.
 
 **Async/sync convention**: public methods that hit the API are ``async`` thin wrappers that
 offload blocking work to ``asyncio.to_thread``; the ``_raw_*`` methods do the
-actual API calls; the ``_await_*`` tenacity retry helpers stay synchronous by
-design (tenacity doesn't support coroutines the same way). All three layers run
-inside threads, never on the event loop directly.
+actual API calls; ``_poll_until`` and the predicate methods it drives stay
+synchronous by design (tenacity doesn't support coroutines the same way). All
+three layers run inside threads, never on the event loop directly.
 
 Usage::
 
@@ -34,9 +34,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
-from tenacity import retry, retry_if_exception, stop_after_delay, wait_fixed
+from tenacity import (
+    RetryError,
+    Retrying,
+    retry_if_exception,
+    retry_if_result,
+    stop_after_delay,
+    wait_fixed,
+)
 
 from googleapiclient import discovery
 from googleapiclient.errors import HttpError
@@ -87,11 +96,82 @@ SECURITY_LABEL: CiGroup = {
 }
 
 
-class _GroupStillExists(Exception):
-    """Raised by `_await_deletion` while the group is still visible to Admin Directory."""
+class PropagationTimeout(Exception):
+    """A Google-side change was accepted but never became visible in time."""
 
 
-def _build_services(
+#: The `reason` values the Admin SDK uses when a 403 means "slow down", not
+#: "forbidden" - Google reports most Directory rate limiting as 403 with one
+#: of these, rather than as a 429.
+_RATE_LIMIT_REASONS = frozenset(
+    {"rateLimitExceeded", "userRateLimitExceeded", "quotaExceeded"}
+)
+
+
+def _is_rate_limited_403(error: HttpError) -> bool:
+    if error.status_code != 403:
+        return False
+    # `error_details` is a parsed list for a JSON error body, but an empty
+    # string when the body was not parseable - and its entries are dicts for
+    # the Admin SDK's envelope but can be plain strings for other shapes.
+    details = error.error_details
+    if not isinstance(details, list):
+        return False
+    return any(
+        isinstance(detail, dict) and detail.get("reason") in _RATE_LIMIT_REASONS
+        for detail in details
+    )
+
+
+def _is_transient_http_error(error: BaseException) -> bool:
+    """True for an `HttpError` worth retrying on its own: a server-side 5xx,
+    a 429, or a 403 whose reason is one of the Admin SDK's rate-limit spellings
+    - any of which Google can return for any of the three APIs during an
+    otherwise-healthy wait. Any other exception, including a genuinely
+    forbidden 403, is a real failure and propagates unwrapped immediately."""
+    return isinstance(error, HttpError) and (
+        error.status_code == 429
+        or error.status_code >= 500
+        or _is_rate_limited_403(error)
+    )
+
+
+def _poll_until(
+    visible: Callable[[], bool], *, interval: float = 2.0, ceiling: float = 60.0
+) -> None:
+    """Block until `visible` returns True, retrying on the propagation cadence.
+
+    The predicate owns the transient/real-error line: it returns False for the
+    lag it expects (a 404 while creation propagates) and lets anything else
+    raise. On top of that, this loop itself also retries a transient `HttpError`
+    (a 5xx or 429) raised by the predicate, since those can land during any wait
+    and are not the predicate's to distinguish from a real failure. Any other
+    exception - a non-transient `HttpError` or anything else - still propagates
+    unwrapped immediately. Runs synchronously inside `asyncio.to_thread`, like
+    everything around it. Raises `PropagationTimeout` when the ceiling passes,
+    whether the last attempt returned False or raised a transient error.
+
+    `interval`/`ceiling` exist for tests; production callers never pass them.
+    """
+    try:
+        for attempt in Retrying(
+            retry=(
+                retry_if_result(lambda done: done is False)
+                | retry_if_exception(_is_transient_http_error)
+            ),
+            wait=wait_fixed(interval),
+            stop=stop_after_delay(ceiling),
+        ):
+            with attempt:
+                result = visible()
+            outcome = attempt.retry_state.outcome
+            if outcome is not None and not outcome.failed:
+                attempt.retry_state.set_result(result)
+    except RetryError as error:
+        raise PropagationTimeout("change accepted but not yet visible") from error
+
+
+def build_services(
     creds: Credentials,
 ) -> tuple[DirectoryResource, CloudIdentityResource, GroupssettingsResource]:
     """Build the three Google API service clients required by `GoogleGroup`.
@@ -100,6 +180,10 @@ def _build_services(
     Identity v1, and Groups Settings v1 respectively. ``cache_discovery=False``
     suppresses the spurious ``file_cache`` warning from the discovery client.
     This is a blocking call and should always run inside ``asyncio.to_thread``.
+
+    Public because `GoogleGroupSync` builds the triple once per instance,
+    outside of any single `GoogleGroup` handle - a membership mutation does not
+    need the full hydration `GoogleGroup.from_remote` performs.
     """
     admin: DirectoryResource = discovery.build(
         "admin", "directory_v1", credentials=creds, cache_discovery=False
@@ -111,6 +195,15 @@ def _build_services(
         "groupssettings", "v1", credentials=creds, cache_discovery=False
     )
     return admin, identity, settings
+
+
+@dataclass(frozen=True)
+class GroupMemberEntry:
+    """One row of a group's remote member list."""
+
+    email: str
+    role: str
+    status: str | None
 
 
 class GoogleGroup:
@@ -163,86 +256,43 @@ class GoogleGroup:
         return f"groups/{self.id}"
 
     # ------------------------------------------------------------------
-    # Tenacity retry helpers (sync; run inside asyncio.to_thread)
+    # Propagation predicates (sync; run inside asyncio.to_thread via _poll_until)
     # ------------------------------------------------------------------
 
-    @retry(
-        retry=retry_if_exception(
-            lambda e: isinstance(e, HttpError) and e.status_code == 404
-        ),
-        wait=wait_fixed(2),
-        stop=stop_after_delay(60),
-    )
-    def _await_creation(self) -> None:
-        """Poll until the new group is visible to both Groups Settings and Cloud Identity.
+    def _creation_visible(self) -> bool:
+        """True once a newly-inserted group is visible to Groups Settings and Cloud Identity.
 
         Admin Directory insert returns immediately, but the other two APIs lag
-        and return 404 for an indeterminate period afterward. Retries every 2s
-        for up to 60s.
-        """
-        self._settings.groups().get(groupUniqueId=self.email).execute()
-        self._identity.groups().get(name=self.cloud_identity_name).execute()
-
-    @retry(
-        retry=retry_if_exception(
-            lambda e: (
-                (isinstance(e, HttpError) and e.status_code != 404)
-                or isinstance(e, _GroupStillExists)
-            )
-        ),
-        wait=wait_fixed(2),
-        stop=stop_after_delay(60),
-    )
-    def _await_deletion(self) -> None:
-        """Poll until Admin Directory confirms the group is gone (returns 404).
-
-        Raises `_GroupStillExists` to keep retrying while the group is still
-        present. Non-404 HTTP errors are also retried;
-        404 is the success condition and is swallowed.
+        and return 404 for an indeterminate period afterward.
         """
         try:
-            self._admin.groups().get(groupKey=self.email).execute()
-            raise _GroupStillExists()
+            self._settings.groups().get(groupUniqueId=self.email).execute()
+            self._identity.groups().get(name=self.cloud_identity_name).execute()
         except HttpError as e:
             if e.status_code == 404:
-                pass
-            else:
-                raise
+                return False
+            raise
+        return True
 
-    @retry(
-        retry=retry_if_exception(lambda e: isinstance(e, AssertionError)),
-        wait=wait_fixed(2),
-        stop=stop_after_delay(60),
-    )
-    def _await_settings(self) -> None:
-        """Poll until the remote settings and labels match what was patched.
+    def _group_gone(self) -> bool:
+        """True once Admin Directory confirms the group no longer exists."""
+        try:
+            self._admin.groups().get(groupKey=self.email).execute()
+        except HttpError as e:
+            if e.status_code == 404:
+                return True
+            raise
+        return False
 
-        The Groups Settings and Cloud Identity ``patch`` calls are subject to
-        the same propagation lag as creation - the API accepts the write but the
-        read doesn't reflect it immediately.
-        """
+    def _settings_match(self) -> bool:
+        """True once the remote settings and Cloud Identity labels match what was patched."""
         remote = self._settings.groups().get(groupUniqueId=self.email).execute()
-        assert all(remote.get(k) == v for k, v in self.settings_group.items())
-
+        if not all(remote.get(k) == v for k, v in self.settings_group.items()):
+            return False
         remote_ci: CiGroup = (
             self._identity.groups().get(name=self.cloud_identity_name).execute()
         )
-        assert "labels" in self.cloud_identity_group
-        assert remote_ci.get("labels") == self.cloud_identity_group["labels"]
-
-    @retry(
-        retry=retry_if_exception(lambda e: isinstance(e, AssertionError)),
-        wait=wait_fixed(2),
-        stop=stop_after_delay(60),
-    )
-    def _await_member_add(self, member_email: str) -> None:
-        """Poll ``hasMember`` until the newly added member is visible."""
-        result = (
-            self._admin.members()
-            .hasMember(groupKey=self.email, memberKey=member_email)
-            .execute()
-        )
-        assert "isMember" in result and result["isMember"]
+        return remote_ci.get("labels") == self.cloud_identity_group.get("labels")
 
     # ------------------------------------------------------------------
     # Raw sync operations
@@ -253,7 +303,7 @@ class GoogleGroup:
         group: Group = self._admin.groups().insert(body=self.group_info).execute()
         assert "id" in group
         self.id = group["id"]
-        self._await_creation()
+        _poll_until(self._creation_visible)
 
     def _raw_configure(self) -> None:
         """Patch Cloud Identity labels and Groups Settings, then wait for both to propagate."""
@@ -266,15 +316,26 @@ class GoogleGroup:
             groupUniqueId=self.email,
             body=self.settings_group,
         ).execute()
-        self._await_settings()
+        _poll_until(self._settings_match)
 
     def _raw_add_member(self, email: str, role: str) -> None:
-        """Insert a member via Admin Directory and wait until ``hasMember`` confirms it."""
+        """Insert a member via Admin Directory.
+
+        No visibility poll: unlike creation (which spans three APIs), a
+        membership mutation is a single-API call whose response is already the
+        verdict - a success means the member is in, a 409 means they were
+        there all along, anything else raises. A reader that needs the change
+        to be *listable* immediately (the live lifecycle test) polls on its
+        own read instead.
+        """
         self._admin.members().insert(
             groupKey=self.email,
             body={"email": email, "role": role},
         ).execute()
-        self._await_member_add(email)
+
+    def _raw_remove_member(self, email: str) -> None:
+        """Delete a member via Admin Directory. Same no-poll contract as adding."""
+        self._admin.members().delete(groupKey=self.email, memberKey=email).execute()
 
     def _raw_delete(self, missing_ok: bool) -> None:
         """Delete the group via Admin Directory and wait until it's gone.
@@ -284,17 +345,35 @@ class GoogleGroup:
         try:
             self._admin.groups().get(groupKey=self.email).execute()
             self._admin.groups().delete(groupKey=self.email).execute()
-            self._await_deletion()
+            _poll_until(self._group_gone)
         except HttpError as e:
             if missing_ok and e.status_code == 404:
                 logger.info("%s not found, nothing to delete", self.email)
             else:
                 raise
 
-    def _raw_list_members(self) -> list:
-        return (
+    def _raw_list_members(self) -> list[GroupMemberEntry]:
+        members = (
             self._admin.members().list(groupKey=self.email).execute().get("members", [])
         )
+        entries: list[GroupMemberEntry] = []
+        for m in members:
+            if "email" not in m or "role" not in m:
+                # A CUSTOMER-type member (an admin adding the whole domain)
+                # legitimately carries no email; a listing is a bulk read, so
+                # skip and note it rather than refusing the whole group.
+                logger.warning(
+                    "skipping %s member entry with no address in %s",
+                    m.get("type", "unknown-type"),
+                    self.email,
+                )
+                continue
+            entries.append(
+                GroupMemberEntry(
+                    email=m["email"], role=m["role"], status=m.get("status")
+                )
+            )
+        return entries
 
     def _raw_get_settings(self) -> SettingsGroup:
         return self._settings.groups().get(groupUniqueId=self.email).execute()
@@ -332,7 +411,7 @@ class GoogleGroup:
         """
 
         def _init() -> GoogleGroup:
-            admin, identity, settings_svc = _build_services(creds)
+            admin, identity, settings_svc = build_services(creds)
             group = cls(
                 email=email,
                 name="",
@@ -357,9 +436,13 @@ class GoogleGroup:
         """Add a member to the group. ``role`` is ``"MEMBER"`` by default; ``"OWNER"`` and ``"MANAGER"`` are also valid."""
         await asyncio.to_thread(self._raw_add_member, email, role)
 
-    async def list_members(self) -> list:
+    async def list_members(self) -> list[GroupMemberEntry]:
         """Returns a list of all members in the group. This currently does not support pagination."""
         return await asyncio.to_thread(self._raw_list_members)
+
+    async def remove_member(self, email: str) -> None:
+        """Remove a member. A 404 (not a member / no such group) raises `HttpError`."""
+        await asyncio.to_thread(self._raw_remove_member, email)
 
     async def get_settings(self) -> SettingsGroup:
         """Retrieves all settings about the group such as and permissions"""
@@ -470,7 +553,7 @@ class GoogleGroupBuilder:
         replace_if_exists = self._replace_if_exists
 
         def _do_build() -> GoogleGroup:
-            admin, identity, settings_svc = _build_services(creds)
+            admin, identity, settings_svc = build_services(creds)
             group = GoogleGroup(
                 email=email,
                 name=name,

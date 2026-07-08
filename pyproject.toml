@@ -86,6 +86,7 @@ testpaths = ["tests/unit", "tests/integration"]
 asyncio_mode = "auto"
 markers = [
     "integration: exercises a real ephemeral Postgres (needs a container runtime)",
+    "credentials: exercises the real Google Workspace APIs (needs the DWD service-account key)",
 ]
 
 [tool.pyright]

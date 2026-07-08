@@ -8,15 +8,20 @@ surfaced).
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from collections.abc import Mapping
 
 import httpx
+from aiolimiter import AsyncLimiter
 
 from rosadmin.credentials import read_credential
 from rosadmin.membership.errors import DecodeError, MalformedMember
 from rosadmin.membership.solidarity_tech.decode import decode_user
 from rosadmin.membership.source import Member
+
+logger = logging.getLogger(__name__)
 
 #: The public API base URL, used when no `SOLIDARITY_TECH_BASE_URL` override is set.
 API_BASE_URL = "https://api.solidarity.tech/v1"
@@ -24,6 +29,20 @@ API_BASE_URL = "https://api.solidarity.tech/v1"
 #: `_limit` page size. A unique email returns 0-1 rows, so one page covers a lookup;
 #: the cap only bounds the roster sweep's page size.
 PAGE_SIZE = 100
+
+#: The pacer's budget: Solidarity Tech allows 60 requests per 30 seconds, and
+#: 55 leaves a margin so a window-boundary race cannot trip the limit. The
+#: leaky bucket lets a pull burst through its first pages at full speed and
+#: only then settles to the steady rate.
+_REQUESTS_PER_WINDOW = 55
+
+#: How many times a 429 is waited out before it is surfaced to the caller.
+_RATE_LIMIT_ATTEMPTS = 5
+
+#: Seconds in the rate-limit window - the bucket's refill period, and the wait
+#: after a 429 that carries no usable Retry-After header, so the next attempt
+#: starts from a clean slate.
+_RATE_LIMIT_WINDOW = 30.0
 
 
 class SolidarityTechClient:
@@ -47,6 +66,7 @@ class SolidarityTechClient:
         )
         self._base_url = resolved.rstrip("/")
         self._client = client or httpx.AsyncClient()
+        self._limiter = AsyncLimiter(_REQUESTS_PER_WINDOW, _RATE_LIMIT_WINDOW)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> SolidarityTechClient:
@@ -89,19 +109,52 @@ class SolidarityTechClient:
         return cls(token=token, base_url=env.get("SOLIDARITY_TECH_BASE_URL"))
 
     def _headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self._token}"}
+        # The mock ignores auth and `from_env`'s mock branch allows an empty
+        # token, which a bearer value of "Bearer " (httpx/h11 rejects a header
+        # value with trailing whitespace) cannot express - omit the header
+        # instead of sending a malformed one.
+        return {"Authorization": f"Bearer {self._token}"} if self._token else {}
+
+    async def _get_users(self, params: dict[str, str | int]) -> httpx.Response:
+        """One `GET /users`, paced under the rate budget, with a 429 safety net.
+
+        The limiter keeps requests inside Solidarity Tech's budget on its own;
+        the retry loop is the net for when that assumption and the server's
+        accounting disagree (another consumer sharing the token, a clock-edge
+        miscount). A 429 waits out `Retry-After` when the server names a
+        delay, else a full window, and is surfaced only once the attempts are
+        spent. Every other error status raises immediately.
+        """
+        attempts = _RATE_LIMIT_ATTEMPTS
+        while True:
+            async with self._limiter:
+                resp = await self._client.get(
+                    f"{self._base_url}/users", params=params, headers=self._headers()
+                )
+            attempts -= 1
+            if resp.status_code != 429 or attempts == 0:
+                resp.raise_for_status()
+                return resp
+            # Parse-or-fallback rather than an isdigit guard: isdigit accepts
+            # Unicode digits float() rejects (the same mismatch decode.py
+            # documents), and a header may also carry an HTTP-date this does
+            # not attempt to honor. Anything unparseable or outside a sane
+            # non-negative bound falls back to the full window.
+            try:
+                wait = float(resp.headers.get("Retry-After", ""))
+            except ValueError:
+                wait = _RATE_LIMIT_WINDOW
+            if not (0 <= wait <= 10 * _RATE_LIMIT_WINDOW):
+                wait = _RATE_LIMIT_WINDOW
+            logger.warning("rate limited by Solidarity Tech; waiting %.0fs", wait)
+            await asyncio.sleep(wait)
 
     async def list_members(self) -> list[Member]:
         """Page the whole collection, skipping any record that fails to decode."""
         members: list[Member] = []
         offset = 0
         while True:
-            resp = await self._client.get(
-                f"{self._base_url}/users",
-                params={"_limit": PAGE_SIZE, "_offset": offset},
-                headers=self._headers(),
-            )
-            resp.raise_for_status()
+            resp = await self._get_users({"_limit": PAGE_SIZE, "_offset": offset})
             body = resp.json()
             data = body.get("data", [])
             for raw in data:
@@ -117,12 +170,7 @@ class SolidarityTechClient:
 
     async def find_by_email(self, email: str) -> Member | None:
         """Return the first match for `email`, or `None`; surface a `DecodeError`."""
-        resp = await self._client.get(
-            f"{self._base_url}/users",
-            params={"email": email, "_limit": PAGE_SIZE},
-            headers=self._headers(),
-        )
-        resp.raise_for_status()
+        resp = await self._get_users({"email": email, "_limit": PAGE_SIZE})
         for raw in resp.json().get("data", []):
             try:
                 return decode_user(raw)

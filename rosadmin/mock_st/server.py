@@ -16,57 +16,149 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
-from rosadmin.membership.solidarity_tech.fixtures import users_page
+from rosadmin.membership.solidarity_tech.decode import (
+    LEADERSHIP_FIELDS,
+    STANDING_LABELS,
+)
+from rosadmin.membership.solidarity_tech.fixtures import (
+    select_prop,
+    status_prop,
+    users_page,
+)
+from rosadmin.membership.source import Standing
 from rosadmin.mock_st.personas import Persona
-from rosadmin.mock_st.roster import parse_map
+from rosadmin.mock_st.roster import RosterEntry, is_snowflake, parse_map
 
 DEFAULT_LIMIT = 100
 
+#: The label the mock (and the real API) stores for an affirmative
+#: `is-chapter-leader` select field.
+_CHAPTER_LEADER_TRUE = "Yes"
+
+
+def _discord_id_of(record: dict[str, Any] | None) -> str | None:
+    """The `discord-user-id` a stored record carries, or `None` (no record,
+    or a malformed one with no properties)."""
+    if record is None:
+        return None
+    raw = record.get("custom_user_properties", {}).get("discord-user-id")
+    return raw if isinstance(raw, str) else None
+
 
 class _RosterStore:
-    """The mutable served roster, keyed on email. Assigns sequential Solidarity
-    Tech ids in insertion order, as `roster.records()` does for the fixed list;
-    a persona swap keeps its member's existing id, a newly-added email takes the
-    next one."""
+    """The mutable served roster, keyed on email, holding each member's already-
+    generated record dict rather than the `Persona` it came from. Regenerating a
+    record from its persona enum cannot express "this persona, but lapsed" or
+    "this persona, plus one more leadership body" - the field-level control
+    routes patch the stored record's `custom_user_properties` in place instead.
 
-    def __init__(self, parsed: list[tuple[str, Persona]]) -> None:
-        self._entries: dict[str, tuple[int, Persona]] = {
-            email: (i + 1, persona) for i, (email, persona) in enumerate(parsed)
-        }
-        # From the highest live id, not len(): the comprehension above dedupes emails
-        # while parse_map does not, so len() can sit below the max id and collide.
-        self._next_id = max((sid for sid, _ in self._entries.values()), default=0) + 1
+    Assigns sequential Solidarity Tech ids in insertion order, as
+    `roster.records()` does for the fixed list; a persona swap keeps its
+    member's existing id, a newly-added email takes the next one.
+    """
+
+    def __init__(self, parsed: list[RosterEntry]) -> None:
+        self._records: dict[str, dict[str, Any]] = {}
+        for i, entry in enumerate(parsed):
+            self._records[entry.email] = entry.persona.user_json(
+                i + 1, entry.email, discord_id=entry.discord_id
+            )
+        # From the highest live id, not len(): parse_map does not dedupe emails,
+        # so a repeated email can leave the id sequence with gaps below len().
+        self._next_id = (
+            max((record["id"] for record in self._records.values()), default=0) + 1
+        )
 
     def as_records(self) -> list[dict[str, Any]]:
-        return [
-            persona.user_json(st_id, email)
-            for email, (st_id, persona) in self._entries.items()
-        ]
+        return list(self._records.values())
 
-    def set(self, email: str, persona: Persona) -> dict[str, Any]:
-        existing = self._entries.get(email)
-        st_id = existing[0] if existing is not None else self._next_id
+    def set(
+        self, email: str, persona: Persona, discord_id: str | None = None
+    ) -> dict[str, Any]:
+        existing = self._records.get(email)
+        st_id = existing["id"] if existing is not None else self._next_id
         if existing is None:
             self._next_id += 1
-        self._entries[email] = (st_id, persona)
-        return persona.user_json(st_id, email)
+        # Without an explicit id, a swap keeps the member's Discord id: for a
+        # synthetic snowflake this regenerates the same value (deterministic in
+        # the kept st_id), and for an override it is what keeps a staging
+        # tester's real id from being clobbered back to synthetic by a persona
+        # change. An explicit id wins over both.
+        if discord_id is None:
+            discord_id = _discord_id_of(existing)
+        record = persona.user_json(st_id, email, discord_id=discord_id)
+        self._records[email] = record
+        return record
 
     def delete(self, email: str) -> None:
-        self._entries.pop(email, None)
+        self._records.pop(email, None)
+
+    def set_standing(self, email: str, standing: Standing) -> dict[str, Any] | None:
+        """Replace the stored record's `membership-status`, or `None` if `email`
+        is not on the roster."""
+        record = self._records.get(email)
+        if record is None:
+            return None
+        record["custom_user_properties"]["membership-status"] = status_prop(
+            STANDING_LABELS[standing]
+        )
+        return record
+
+    def set_leadership(
+        self, email: str, field: str, label: str, *, present: bool
+    ) -> dict[str, Any] | None:
+        """Add or drop `label` under `field`, or `None` if `email` is not on the
+        roster. Keeps `is-chapter-leader` in agreement with the leadership
+        fields: turning a body on sets the flag if it was absent, and turning
+        off the roster's last body across every leadership field clears it -
+        a member deliberately marked leader with no body (`MarkedNoBody`)
+        never reaches this method, so that anomaly is undisturbed.
+        """
+        record = self._records.get(email)
+        if record is None:
+            return None
+        props = record["custom_user_properties"]
+        entries = [e for e in props.get(field, []) if e.get("label") != label]
+        if present:
+            entries.extend(select_prop(label))
+        if entries:
+            props[field] = entries
+        else:
+            props.pop(field, None)
+        if present:
+            if not props.get("is-chapter-leader"):
+                props["is-chapter-leader"] = select_prop(_CHAPTER_LEADER_TRUE)
+        elif not any(props.get(f) for f in LEADERSHIP_FIELDS):
+            props.pop("is-chapter-leader", None)
+        return record
 
 
 class _MemberUpsert(BaseModel):
     email: str
     persona: str
+    #: Optional real Discord id for the record, replacing the synthetic
+    #: snowflake - the live counterpart of the persona map's `persona:<id>`
+    #: override. Omitted: an existing member keeps whatever id they have.
+    discord_id: str | None = None
 
 
 class _MemberEmail(BaseModel):
     email: str
 
 
-def create_app(
-    parsed: list[tuple[str, Persona]], *, controllable: bool = False
-) -> FastAPI:
+class _StandingUpdate(BaseModel):
+    email: str
+    standing: str
+
+
+class _LeadershipUpdate(BaseModel):
+    email: str
+    field: str
+    label: str
+    present: bool
+
+
+def create_app(parsed: list[RosterEntry], *, controllable: bool = False) -> FastAPI:
     """Build the mock over a parsed persona map.
 
     `controllable=True` also mounts the `/_control` mutation routes; the suites
@@ -94,11 +186,37 @@ def create_app(
             persona = Persona.parse(body.persona)
             if persona is None:
                 raise HTTPException(400, f"unknown persona {body.persona!r}")
-            return store.set(body.email, persona)
+            if body.discord_id is not None and not is_snowflake(body.discord_id):
+                raise HTTPException(400, "discord_id must be numeric")
+            return store.set(body.email, persona, discord_id=body.discord_id)
 
         @app.delete("/_control/member", status_code=204)
         def delete_member(body: _MemberEmail) -> None:
             store.delete(body.email)
+
+        @app.post("/_control/member/standing")
+        def set_standing(body: _StandingUpdate) -> dict[str, Any]:
+            try:
+                standing = Standing(body.standing)
+            except ValueError:
+                raise HTTPException(
+                    400, f"unknown standing {body.standing!r}"
+                ) from None
+            record = store.set_standing(body.email, standing)
+            if record is None:
+                raise HTTPException(404, f"unknown member {body.email!r}")
+            return record
+
+        @app.post("/_control/member/leadership")
+        def set_leadership(body: _LeadershipUpdate) -> dict[str, Any]:
+            if body.field not in LEADERSHIP_FIELDS:
+                raise HTTPException(400, f"unknown leadership field {body.field!r}")
+            record = store.set_leadership(
+                body.email, body.field, body.label, present=body.present
+            )
+            if record is None:
+                raise HTTPException(404, f"unknown member {body.email!r}")
+            return record
 
     return app
 

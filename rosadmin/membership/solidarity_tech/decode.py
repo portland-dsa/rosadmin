@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from rosadmin.membership.errors import DecodeError, MalformedMember
-from rosadmin.membership.source import BodyType, Leadership, Member, Standing
+from rosadmin.membership.source import BodyType, Email, Leadership, Member, Standing
 
 #: The canonical membership-status label for each recognized standing. The single owner
 #: of these label strings: the decode reverse-maps them and the persona mock builds its
@@ -42,6 +42,11 @@ _FIELD_BODY_TYPES: dict[str, BodyType] = {
 #: The label Solidarity Tech stores in the `is-chapter-leader` select field for a yes.
 _CHAPTER_LEADER_TRUE = "Yes"
 
+#: The valid leadership select-field names, public so other producers of this
+#: wire shape (the persona mock's field-level control routes) can validate
+#: against the same set the decoder reads.
+LEADERSHIP_FIELDS: frozenset[str] = frozenset(_FIELD_BODY_TYPES)
+
 
 def decode_user(user: dict[str, Any]) -> Member:
     """Decode one user object, raising `MalformedMember` (no email) or `DecodeError`."""
@@ -52,7 +57,8 @@ def decode_user(user: dict[str, Any]) -> Member:
     props = user.get("custom_user_properties") or {}
     return Member(
         st_id=int(user["id"]),
-        email=email,
+        email=Email(email),
+        alternate_email=_decode_alternate_email(props),
         standing=_decode_standing(props),
         discord_id=_decode_discord_id(props),
         first_name=user.get("first_name"),
@@ -98,6 +104,14 @@ def _decode_chapter_leader(props: dict[str, Any]) -> bool:
         isinstance(entry, dict) and entry.get("label") == _CHAPTER_LEADER_TRUE
         for entry in field
     )
+
+
+def _decode_alternate_email(props: dict[str, Any]) -> Email | None:
+    # Free-text property; anything without an @ is noise, not an address.
+    raw = props.get("alternate-email")
+    if not isinstance(raw, str) or "@" not in raw:
+        return None
+    return Email(raw.strip())
 
 
 def _decode_discord_id(props: dict[str, Any]) -> int | None:

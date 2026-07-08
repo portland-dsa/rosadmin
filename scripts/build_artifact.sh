@@ -33,8 +33,12 @@ cp -a "$py_install/." "$root/python/"
 #    so nothing symlinks back to the build machine). uv flags its managed pythons with a
 #    "do not modify me" marker; drop it first - this copy is now our app's dedicated runtime,
 #    ours to install into - then `--system` permits the non-venv install.
+#    Any further arguments are extra local packages baked into this flavor of the
+#    artifact - the staging build passes ./admintools so the operator admin socket
+#    exists there, and a production build passes nothing, which is what makes the
+#    admin surface absent-by-packaging rather than merely off.
 rm -f "$root/python/lib/python$py/EXTERNALLY-MANAGED"
-uv pip install --python "$root/python/bin/python3" --system --no-cache .
+uv pip install --python "$root/python/bin/python3" --system --no-cache . "$@"
 
 # 3. Precompile bytecode so the read-only tree never attempts a .pyc write at runtime.
 "$root/python/bin/python3" -m compileall -q "$root/python" || true

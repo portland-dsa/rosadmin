@@ -31,6 +31,8 @@ class MemberRow:
     last_name: str | None
     alternate_name: str | None
     email: str
+    alternate_email: str | None
+    discord_user_id: int | None
     standing: Standing
 
 
@@ -66,8 +68,18 @@ class GateRow:
     assessment: LeadershipAssessment
 
 
+@dataclass(frozen=True)
+class BodyLinkRow:
+    """A body's Google linkage: both group addresses, or neither (`linked_pair`)."""
+
+    id: UUID
+    leader_google_group_email: str | None
+    member_google_group_email: str | None
+
+
 _MEMBER_BY_DISCORD = """
-    SELECT id, first_name, last_name, alternate_name, email, standing
+    SELECT id, first_name, last_name, alternate_name, email, alternate_email,
+           discord_user_id, standing
     FROM members
     WHERE discord_user_id = %s
 """
@@ -75,7 +87,8 @@ _MEMBER_BY_DISCORD = """
 #: Case-insensitive: stored emails are unnormalized and Solidarity Tech's own
 #: `?email=` filter is case-insensitive, so a case-mismatched search must still hit.
 _MEMBER_BY_EMAIL = """
-    SELECT id, first_name, last_name, alternate_name, email, standing
+    SELECT id, first_name, last_name, alternate_name, email, alternate_email,
+           discord_user_id, standing
     FROM members
     WHERE lower(email) = lower(%s)
 """
@@ -107,6 +120,12 @@ _GATE_LOOKUP = """
     SELECT id AS member_id, leadership_assessment AS assessment
     FROM members
     WHERE discord_user_id = %s
+"""
+
+_BODY_LINK = """
+    SELECT id, leader_google_group_email, member_google_group_email
+    FROM leadership_bodies
+    WHERE id = %s
 """
 
 
@@ -156,4 +175,13 @@ async def gate_lookup(pool: AsyncConnectionPool, discord_id: int) -> GateRow | N
         conn.cursor(row_factory=class_row(GateRow)) as cur,
     ):
         await cur.execute(_GATE_LOOKUP, (discord_id,))
+        return await cur.fetchone()
+
+
+async def body_link(pool: AsyncConnectionPool, body_id: UUID) -> BodyLinkRow | None:
+    async with (
+        pool.connection() as conn,
+        conn.cursor(row_factory=class_row(BodyLinkRow)) as cur,
+    ):
+        await cur.execute(_BODY_LINK, (body_id,))
         return await cur.fetchone()

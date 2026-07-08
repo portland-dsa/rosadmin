@@ -9,6 +9,8 @@ from __future__ import annotations
 import psycopg
 import pytest
 
+from tests.support.pg import one_row
+
 pytestmark = pytest.mark.integration
 
 
@@ -35,3 +37,26 @@ def test_app_role_has_full_access_to_data_tables(database) -> None:
         )
         rows = conn.execute("SELECT email FROM members").fetchall()
         assert ("ralsei@example.com",) in rows
+
+
+def test_app_role_may_link_a_body_but_not_rename_it(database) -> None:
+    with psycopg.connect(database.superuser_dsn, autocommit=True) as conn:
+        body_id = one_row(
+            conn.execute(
+                "INSERT INTO leadership_bodies (name, body_type) VALUES (%s, %s)"
+                " RETURNING id",
+                ("card castle", "chapter"),
+            )
+        )[0]
+    with psycopg.connect(database.app_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE leadership_bodies"
+            " SET leader_google_group_email = %s, member_google_group_email = %s"
+            " WHERE id = %s",
+            ("leaders@example.com", "members@example.com", body_id),
+        )
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute(
+                "UPDATE leadership_bodies SET name = %s WHERE id = %s",
+                ("dark castle", body_id),
+            )

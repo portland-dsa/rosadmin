@@ -52,8 +52,10 @@ jobs:
 
             - name: Pytest (unit)
               # The integration suite runs in the sibling "Integration" job, which
-              # has a container runtime; this job stays offline.
-              run: uv run pytest -m "not integration"
+              # has a container runtime. The credentials suite never runs in CI
+              # at all - CI holds no Google key on purpose; that suite is run
+              # locally by the pre-push hook when a real key is present.
+              run: uv run pytest -m "not integration and not credentials"
 
             - name: gitleaks
               run: |
@@ -83,4 +85,4 @@ jobs:
               # ubuntu runners ship Docker, so testcontainers boots a throwaway
               # postgres:18 - the database is never mocked. Its also credential-free so no
               # secret, just a disposable container.
-              run: uv run pytest -m integration
+              run: uv run pytest -m "integration and not credentials"

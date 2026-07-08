@@ -1,29 +1,52 @@
-"""The records-backed `MemberDirectory`: reads over the real schema.
+"""The records-backed `MemberDirectory` and `GroupModify`: reads and
+mutations over the real schema.
 
 Maps the same rows into the Pydantic contract the routes return. The record
 *shapes* match `StubDirectory`'s, but the data differs for now: the pull
 writes only `role='leader'` rows, so a records-backed group's member list
 currently holds just that body's leaders, where the stub also seeds members.
-Mutations are not implemented here; a build wiring `RecordsDirectory` leaves
-`app.state.group_modify` unset, so those routes answer 501.
+
+`RecordsGroupModify` claims each write in its own transaction (`db.mutations`)
+and calls the Google mirror only after that transaction has committed - never
+inside it. The mirror call and its audit row run in a background task spawned
+right after the commit, so the HTTP response returns at DB-commit time rather
+than paying for a Google round trip the caller never sees the result of. A
+`Failed` mirror outcome changes nothing about either the response or the
+write: the write already stands, and the audit row plus the sync's own error
+log are the record of what happened.
 """
 
 from __future__ import annotations
 
-from typing import Protocol
+import asyncio
+import logging
+from collections.abc import Coroutine
+from typing import Any, Protocol
 from uuid import UUID
 
 from psycopg_pool import AsyncConnectionPool
 
+from rosadmin.db.audit import AuditSink, record_best_effort
 from rosadmin.db.directory import (
+    BodyLinkRow,
     MemberRow,
     bodies_led_by,
+    body_link,
     full_name,
     led_bodies_with_members,
     member_by_discord,
     member_by_email,
 )
-from rosadmin.membership.source import Standing
+from rosadmin.db.mutations import (
+    ClaimOutcome,
+    RemoveOutcome,
+    claim_and_add_member,
+    claim_and_remove_member,
+    is_leader_of,
+    member_row_by_id,
+)
+from rosadmin.group_sync import EXAMPLE_DOMAIN, GroupSync
+from rosadmin.membership.source import Email, Standing, sync_email
 from rosadmin.web.models import (
     Group,
     GroupMember,
@@ -35,6 +58,8 @@ from rosadmin.web.models import (
 )
 from rosadmin.web.problems import AppProblem, ProblemCode
 from rosadmin.web.sessions import Principal
+
+logger = logging.getLogger(__name__)
 
 
 class _NameParts(Protocol):
@@ -55,6 +80,39 @@ def _display_name(row: _NameParts) -> str:
     return full_name(row.first_name, row.last_name, row.alternate_name)
 
 
+async def _resolve_member(pool: AsyncConnectionPool, principal: Principal) -> MemberRow:
+    """The acting member behind a session, or 404 - shared by reads and mutations."""
+    row = await member_by_discord(pool, int(principal.discord_id))
+    if row is None:
+        raise AppProblem(404, ProblemCode.NotFound, "unknown principal")
+    return row
+
+
+def _sync_target(target: MemberRow) -> Email:
+    """The address a mutation's Google mirror call targets, per `sync_email`.
+
+    A record whose primary is an example-domain address is an unusable or
+    fabricated record wholesale, so it never redirects to an alternate: the
+    sync's skip gate must see the example primary and skip, not a plausible
+    gmail alternate it would happily deliver to. Without this, a fabricated
+    test persona carrying a made-up `@gmail.com` alternate would sail through
+    the gate and really be invited on a live tenant.
+    """
+    primary = Email(target.email)
+    if primary.lower().endswith(EXAMPLE_DOMAIN):
+        return primary
+    alternate = Email(target.alternate_email) if target.alternate_email else None
+    return sync_email(primary, alternate)
+
+
+def _group_email(link: BodyLinkRow) -> Email | None:
+    return (
+        Email(link.member_google_group_email)
+        if link.member_google_group_email
+        else None
+    )
+
+
 class RecordsDirectory:
     """The `MemberDirectory` over the `members`/`leadership_bodies` schema."""
 
@@ -62,10 +120,7 @@ class RecordsDirectory:
         self._pool = pool
 
     async def _member(self, principal: Principal) -> MemberRow:
-        row = await member_by_discord(self._pool, int(principal.discord_id))
-        if row is None:
-            raise AppProblem(404, ProblemCode.NotFound, "unknown principal")
-        return row
+        return await _resolve_member(self._pool, principal)
 
     async def search(self, email: str) -> SearchHit | SearchMiss:
         row = await member_by_email(self._pool, email)
@@ -115,3 +170,164 @@ class RecordsDirectory:
             )
             for body_id, (name, body_type, members) in bodies.items()
         ]
+
+
+class RecordsGroupModify:
+    """The `GroupModify` over the same schema: leader-scoped add/remove."""
+
+    def __init__(
+        self, pool: AsyncConnectionPool, group_sync: GroupSync, audit_sink: AuditSink
+    ) -> None:
+        self._pool = pool
+        self._group_sync = group_sync
+        self._audit_sink = audit_sink
+        # Strong references to in-flight mirror tasks: asyncio only holds a
+        # weak reference to a task, so without this a task with no other
+        # referent can be garbage-collected mid-flight.
+        self._mirror_tasks: set[asyncio.Task[None]] = set()
+
+    async def _require_leader(self, principal: Principal, group_id: UUID) -> MemberRow:
+        actor = await _resolve_member(self._pool, principal)
+        # A non-leader and an unknown body answer identically: existence of a
+        # body this principal does not lead is not disclosed to them.
+        if not await is_leader_of(self._pool, actor.id, group_id):
+            raise AppProblem(404, ProblemCode.NotFound, "unknown group")
+        return actor
+
+    def _spawn_mirror(self, coro: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(self._run_mirror(coro))
+        self._mirror_tasks.add(task)
+        task.add_done_callback(self._mirror_tasks.discard)
+
+    @staticmethod
+    async def _run_mirror(coro: Coroutine[Any, Any, None]) -> None:
+        # The last-resort net: `GroupSync` already maps every expected Google
+        # failure to a `SyncOutcome` instead of raising, so anything reaching
+        # here is unexpected - a background task's exception otherwise vanishes
+        # silently instead of surfacing to a caller. Never logs a member
+        # address; only what the coroutine itself would have logged does.
+        try:
+            await coro
+        except Exception:
+            logger.error("group mirror task failed unexpectedly", exc_info=True)
+
+    async def drain(self) -> None:
+        """Await every mirror task in flight right now.
+
+        Tests call this after an HTTP round trip to observe the mirror's
+        outcome before asserting on it; the shutdown path calls it before the
+        pool closes, so a mirror task is never left running against a closed
+        pool.
+        """
+        pending = list(self._mirror_tasks)
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _mirror_add(
+        self,
+        actor_id: UUID,
+        group_id: UUID,
+        member_id: UUID,
+        target: MemberRow,
+        group_email: Email | None,
+    ) -> None:
+        outcome = await self._group_sync.add(group_email, _sync_target(target))
+        await record_best_effort(
+            self._audit_sink,
+            "group.member_added",
+            actor=str(actor_id),
+            subject=str(member_id),
+            detail={"body_id": str(group_id), "google": outcome.value},
+        )
+
+    async def _mirror_remove(
+        self,
+        actor_id: UUID,
+        group_id: UUID,
+        member_id: UUID,
+        target: MemberRow,
+        group_email: Email | None,
+    ) -> None:
+        outcome = await self._group_sync.remove(group_email, _sync_target(target))
+        await record_best_effort(
+            self._audit_sink,
+            "group.member_removed",
+            actor=str(actor_id),
+            subject=str(member_id),
+            detail={"body_id": str(group_id), "google": outcome.value},
+        )
+
+    async def _member_group_email(self, group_id: UUID) -> Email | None:
+        """The body's member-group address, resolved before the mirror spawns.
+
+        Captured by value so the task depends on nothing mutable; a body with
+        no linkage row (or none linked) yields None, which the sync's unlinked
+        gate turns into a recorded skip rather than a crash.
+        """
+        link = await body_link(self._pool, group_id)
+        return _group_email(link) if link is not None else None
+
+    async def add_member(
+        self, principal: Principal, group_id: UUID, member_id: UUID
+    ) -> GroupMember:
+        actor = await self._require_leader(principal, group_id)
+
+        target = await member_row_by_id(self._pool, member_id)
+        if target is None:
+            raise AppProblem(404, ProblemCode.MemberNotFound, "no such member")
+        if target.standing is not Standing.GoodStanding:
+            raise AppProblem(
+                409, ProblemCode.MemberNotEligible, "member is not in good standing"
+            )
+
+        claimed = await claim_and_add_member(
+            self._pool, body_id=group_id, member_id=member_id, added_by=actor.id
+        )
+        if claimed is None:
+            raise AppProblem(404, ProblemCode.NotFound, "unknown group")
+        if claimed is ClaimOutcome.IsLeader:
+            raise AppProblem(
+                409, ProblemCode.AlreadyLeader, "already a leader of this group"
+            )
+        if claimed is ClaimOutcome.AlreadyPresent:
+            raise AppProblem(409, ProblemCode.AlreadyMember, "already a member")
+
+        group_email = await self._member_group_email(group_id)
+        self._spawn_mirror(
+            self._mirror_add(actor.id, group_id, member_id, target, group_email)
+        )
+        return GroupMember(
+            id=target.id,
+            full_name=_display_name(target),
+            email=target.email,
+            role=Role.Member,
+        )
+
+    async def remove_member(
+        self, principal: Principal, group_id: UUID, member_id: UUID
+    ) -> None:
+        actor = await self._require_leader(principal, group_id)
+
+        # Read the target before the claim, mirroring add_member: the mirror
+        # needs the row's addresses, and reading after the delete commits
+        # would race a concurrent member-record deletion. A missing record
+        # answers exactly like a missing membership row - it has neither.
+        target = await member_row_by_id(self._pool, member_id)
+        if target is None:
+            raise AppProblem(404, ProblemCode.NotAMember, "not a member")
+
+        removed = await claim_and_remove_member(
+            self._pool, body_id=group_id, member_id=member_id
+        )
+        if removed is None or removed is RemoveOutcome.NotAMember:
+            raise AppProblem(404, ProblemCode.NotAMember, "not a member")
+        if removed is RemoveOutcome.IsLeader:
+            raise AppProblem(
+                403,
+                ProblemCode.LeaderNotRemovable,
+                "leaders are managed by the membership records, not the panel",
+            )
+
+        group_email = await self._member_group_email(group_id)
+        self._spawn_mirror(
+            self._mirror_remove(actor.id, group_id, member_id, target, group_email)
+        )

@@ -9,6 +9,7 @@ resolution-markers = [
 [manifest]
 members = [
     "rosadmin",
+    "rosadmin-admintools",
     "rosadmin-devtools",
 ]
 
@@ -19,6 +20,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/1c/3f/ccb16bdc53ebb81c1bf837c1ee4b5b0b69584fd2e4a802a2a79936691c0a/about-time-4.2.1.tar.gz", hash = "sha256:6a538862d33ce67d997429d14998310e1dbfda6cb7d9bbfbf799c4709847fece", size = 15380, upload-time = "2022-12-21T04:15:54.991Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/cd/7ee00d6aa023b1d0551da0da5fee3bc23c3eeea632fbfc5126d1fec52b7e/about_time-4.2.1-py3-none-any.whl", hash = "sha256:8bbf4c75fe13cbd3d72f49a03b02c5c7dca32169b6d49117c257e7eb3eaee341", size = 13295, upload-time = "2022-12-21T04:15:53.613Z" },
+]
+
+[[package]]
+name = "aiolimiter"
+version = "1.2.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f1/23/b52debf471f7a1e42e362d959a3982bdcb4fe13a5d46e63d28868807a79c/aiolimiter-1.2.1.tar.gz", hash = "sha256:e02a37ea1a855d9e832252a105420ad4d15011505512a1a1d814647451b5cca9", size = 7185, upload-time = "2024-12-08T15:31:51.496Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f3/ba/df6e8e1045aebc4778d19b8a3a9bc1808adb1619ba94ca354d9ba17d86c3/aiolimiter-1.2.1-py3-none-any.whl", hash = "sha256:d3f249e9059a20badcb56b61601a83556133655c11d1eb3dd3e04ff069e5f3c7", size = 6711, upload-time = "2024-12-08T15:31:49.874Z" },
 ]
 
 [[package]]
@@ -1194,6 +1204,7 @@ name = "rosadmin"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiolimiter" },
     { name = "alive-progress" },
     { name = "cryptography" },
     { name = "cyclopts" },
@@ -1221,6 +1232,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "respx" },
+    { name = "rosadmin-admintools" },
     { name = "rosadmin-devtools" },
     { name = "ruff" },
     { name = "testcontainers" },
@@ -1228,6 +1240,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiolimiter", specifier = ">=1.2.1" },
     { name = "alive-progress", specifier = ">=3.3.0" },
     { name = "cryptography", specifier = ">=48.0.0" },
     { name = "cyclopts", specifier = ">=4.15.0" },
@@ -1255,10 +1268,22 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
     { name = "respx", specifier = ">=0.23.1" },
+    { name = "rosadmin-admintools", editable = "admintools" },
     { name = "rosadmin-devtools", editable = "devtools" },
     { name = "ruff", specifier = ">=0.15.20" },
     { name = "testcontainers", specifier = ">=4.9" },
 ]
+
+[[package]]
+name = "rosadmin-admintools"
+version = "0.1.0"
+source = { editable = "admintools" }
+dependencies = [
+    { name = "rosadmin" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "rosadmin", editable = "." }]
 
 [[package]]
 name = "rosadmin-devtools"

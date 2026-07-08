@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import httpx
 from behave import then, when
@@ -130,3 +131,41 @@ def step_mutation_refused(context):
         "application/problem+json"
     )
     assert context.response.json()["code"] == "mutations_not_available"
+
+
+@when('Ralsei fake-logs-in against records as persona "{persona}"')
+def step_fake_login_records(context, persona):
+    # The records branch of fake-login resolves the persona through the same
+    # map the mock serves, so hand it the Background's spec via the env var.
+    previous = os.environ.get("SOLIDARITY_TECH_MOCK_PERSONAS")
+    os.environ["SOLIDARITY_TECH_MOCK_PERSONAS"] = context.persona_spec
+
+    def restore():
+        if previous is None:
+            os.environ.pop("SOLIDARITY_TECH_MOCK_PERSONAS", None)
+        else:
+            os.environ["SOLIDARITY_TECH_MOCK_PERSONAS"] = previous
+
+    context.add_cleanup(restore)
+    context.app = create_app(
+        WebSettings(fake_login_enabled=True, allowed_origin=None),
+        session_store=InMemorySessionStore(),
+        audit_sink=RecordingAuditSink(),
+    )
+    context.token = ""
+    context.response = _call(
+        context, "POST", "/api/auth/fake-login", json={"persona": persona}
+    )
+
+
+@then('the fake login answers 200 with display name "{name}"')
+def step_fake_login_ok(context, name):
+    assert context.response.status_code == 200, context.response.text
+    assert context.response.json()["display_name"] == name, context.response.text
+    assert context.response.cookies.get("rosadmin_session"), "no session cookie set"
+
+
+@then('the fake login is refused with "{code}"')
+def step_fake_login_refused(context, code):
+    assert context.response.status_code == 403, context.response.text
+    assert context.response.json()["code"] == code, context.response.text

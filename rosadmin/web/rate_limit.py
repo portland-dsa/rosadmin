@@ -51,8 +51,21 @@ def _client_ip(request: Request) -> str | None:
     )
 
 
+def _route_pattern(request: Request) -> str:
+    """The matched route's template, not the concrete URL.
+
+    Keying the bucket on the raw path would give every distinct path parameter
+    (a member id in a DELETE route) its own fresh bucket, which un-limits any
+    endpoint that embeds one - the caller controls the key. The template
+    ("/api/groups/{group_id}/members/{member_id}") is one bucket per endpoint.
+    """
+    route = request.scope.get("route")
+    pattern = getattr(route, "path_format", None) or getattr(route, "path", None)
+    return pattern if pattern is not None else request.url.path
+
+
 async def rate_limited(request: Request) -> None:
-    """FastAPI dependency: 429 when this IP has exceeded the window on this path."""
+    """FastAPI dependency: 429 when this IP has exceeded the window on this endpoint."""
     client_ip = _client_ip(request)
     if client_ip is None:
         # Nothing to key a bucket on. In production Caddy always sets the header,
@@ -61,6 +74,6 @@ async def rate_limited(request: Request) -> None:
         # out every login. Fail open.
         return
     limiter: RateLimiter = request.app.state.rate_limiter
-    bucket = f"auth:{request.url.path}:{client_ip}"
+    bucket = f"auth:{_route_pattern(request)}:{client_ip}"
     if await limiter.hit(bucket) > AUTH_RATE_LIMIT:
         raise AppProblem(429, ProblemCode.RateLimited, "too many requests")

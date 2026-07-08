@@ -52,18 +52,10 @@ If you want to test the program, set one of two environment variables:
 
 After you set that environment variable, run:
 ```zsh
-uv run rosadmin one-shot test-group-lifecycle
+uv run pytest -m credentials
 ```
 
-With luck, this will create a group for you, add a member, then grab the group info to print and delete the group. If this crashes after creating the group (say you forgot to enable the Cloud Identity API), it's smart enough to delete it at the start before trying again, so don't worry about doing that manually.
-
-If you don't want to delete the test group at the end (say you want to go into the admin panel and inspect it), you can run
-
-```zsh
-uv run rosadmin one-shot test-group-lifecycle --delete-at-end=False
-```
-
-Just make sure to delete the group manually if you don't want it there.
+With luck, this will create a group for you, add a member, list it back, remove the member, verify the settings and labels, then delete the group in a `finally` - the full live arc against your real Workspace tenant, gated behind the `credentials` marker so it never runs by accident. It uses `replace_if_exists`, so a group left behind by a crashed prior run (say you forgot to enable the Cloud Identity API) doesn't block a retry.
 
 ## Setting up the **Dev** Environment
 
@@ -110,7 +102,17 @@ Then, set up a `.env` file as such:
 ```
 ROSADMIN_DB_DSN="host=127.0.0.1 port=54432 dbname=rosadmin_dev user=rosadmin_app"
 ROSADMIN_AUDIT_HMAC_KEY=<the key from openssl>
+ROSADMIN_GOOGLE_DRY_RUN=1
+ROSADMIN_EXPECT_EXAMPLE_EMAILS=1
+
+SOLIDARITY_TECH_MOCK_PERSONAS=ralsei@example.com=leader:<your discord ID>,kris@example.com=co_leader,susie@example.com=lapsed,noelle@example.com=good_standing
+SOLIDARITY_TECH_BASE_URL=http://127.0.0.1:8001
+SOLIDARITY_TECH_MOCK=1
 ```
+
+- `ROSADMIN_GOOGLE_DRY_RUN=1` is what lets the service boot without Google Workspace credentials: the Google mirror deliberately refuses to start half-configured, so with no dry-run flag you must supply `ROSADMIN_GOOGLE_SUBJECT` plus a service-account key. For local development you almost always want dry-run, which logs what it would have done instead of calling Google.
+- `SOLIDARITY_TECH_BASE_URL` and `SOLIDARITY_TECH_MOCK` runs the *mock* Solidarity Tech server so you can test against mocked records. See the [Admin Socket](#admin-socket) section for actual details (including info on the `SOLIDARITY_TECH_MOCK_PERSONAS` line)
+- `ROSADMIN_EXPECT_EXAMPLE_EMAILS` - treats `@example.com` as emails real emails that refuse to send to Google. In terms of the program functioning, this is technically redundant with `ROSADMIN_GOOGLE_DRY_RUN` set, but it's good too have anyway.
 
 Now you can launch `rosadmin`:
 ```zsh
@@ -119,7 +121,27 @@ uv run --env-file .env rosadmin serve --port <port>
 
 Note that to do anything useful you should follow the steps in `SSO Flow` below.
 
+### Full Takeoff Checklist
+
+Here's your takeoff checklist for every step below:
+- [ ] Run the **Bot** - can be skipped if using `fake-login` exclusively
+  - [ ] Have your `.env`, Guild, and Discord application set up as per the Botonio Botsci README
+  - [ ] Run the database from the `botonio-botsci` repo root with `podman compose -f deploy/test-infra/compose.yaml up -d`
+  - [ ] Migrate the database with `cargo sqlx migrate run --source crates/persistence/migrations`
+  - [ ] Run the bot with `cargo run --bin botonio-botsci`
+  - [ ] Run `/setup` in the Discord test server and set the options as in the Botonio Botsci README
+  - [ ] Ctrl+C to stop the bot (do NOT kill the database or you'll have to repeat the previous step)
+  - [ ] Run the bot with `cargo run --bin botonio-botsci`
+- [ ] Run **rosadmin**
+  - [ ] Have your `.env` set up as in this document, or copy `.env.example` to `.env` and enter the relevant values
+  - [ ] Run the database from the `rosadmin` repo root with `podman compose -f deploy/test-infra/compose.yaml up -d`
+  - [ ] Migrate the database with `uv run yoyo apply -b --no-config-file -d postgresql+psycopg://rosadmin_app@127.0.0.1:54432/rosadmin_dev rosadmin/migrations`
+  - [ ] Run rosadmin with `uv run --env-file .env rosadmin serve --port <IMPORTANT THE SAME PORT AS BOT_SSO_REDIRECT_URI>`
+  - [ ] Pull the mock ST records with `uv run --env-file ./.env rosadmin roster pull` (or use the matching [Admin Socket](#admin-socket) command).
+
 ### SSO Flow
+
+This section covers the setup for the *authentication* flow; if you need *authorization* see some options in [Admin Socket](#admin-socket).
 
 #### Fake Login
 
@@ -146,6 +168,8 @@ curl -i localhost:8000/api/me -b jar.txt
 ```
 
 **Second Note** if you're running the SPA from Vite's dev server, you probably want a proxy entry `server.proxy: { "/api": "http://127.0.0.1:8000" }` so it behaves just like a real ~~boy~~ deployment. Otherwise you'll get weird CORS issues since the requests aren't proxied like they are on the live box.
+
+**Third Note** given we use OpenAPI, when you launch this in dev mode, you can actually just navigate to `localhost:8000/api/docs` and it will let you test there. This is generally much more convenient than using raw `curl`.
 
 #### Real Login
 
@@ -178,24 +202,10 @@ ROSADMIN_FAKE_LOGIN=1 # Optional
 ROSADMIN_DB_DSN="host=127.0.0.1 port=54432 dbname=rosadmin_dev user=rosadmin_app"
 
 ROSADMIN_AUDIT_HMAC_KEY=<from the serving section or `openssl rand -hex 32`>
+ROSADMIN_GOOGLE_DRY_RUN=1 # See Serving above; omit only if testing the real Google mirror
 ```
 
 Remember, this all *must* be done *either* in the *same* WSL instance, *or* on the same Linux box(/virtual machine)
-
-Now here's your takeoff checklist:
-- [ ] Run the **Bot**
-  - [ ] Have your `.env`, Guild, and Discord application set up as per the Botonio Botsci README
-  - [ ] Run the database from the `botonio-botsci` repo root with `podman compose -f deploy/test-infra/compose.yaml up -d`
-  - [ ] Migrate the database with `cargo sqlx migrate run --source crates/persistence/migrations`
-  - [ ] Run the bot with `cargo run --bin botonio-botsci`
-  - [ ] Run `/setup` in the Discord test server and set the options as in the Botonio Botsci README
-  - [ ] Ctrl+C to stop the bot (do NOT kill the database or you'll have to repeat the previous step)
-  - [ ] Run the bot with `cargo run --bin botonio-botsci`
-- [ ] Run **rosadmin**
-  - [ ] Have your `.env` set up as above
-  - [ ] Run the database from the `rosadmin` repo root with `podman compose -f deploy/test-infra/compose.yaml up -d`
-  - [ ] Migrate the database with `uv run yoyo apply -b --no-config-file -d postgresql+psycopg://rosadmin_app@127.0.0.1:54432/rosadmin_dev rosadmin/migrations`
-  - [ ] Run rosadmin with `uv run --env-file .env rosadmin serve --port <IMPORTANT THE SAME PORT AS BOT_SSO_REDIRECT_URI>`
 
 Now you can communicate via the API endpoints as per the specification, either by hosting the frontend, or with a browser. Note that `curl` isn't very useful because of a lack of ways to grab a Discord OAUTH authorization from the terminal (due to CSRF protection, you can't *start* a session from the terminal, then *finish* in the browser just to reuse the session state in the terminal).
 
@@ -204,6 +214,56 @@ You can verify SSO works by logging in with `localhost:<PORT>/api/auth/begin`, t
 Phew, thanks for enduring this marathon. Luckily other than the bot `/setup` pain you really only need to do most of this once.
 
 **Reminder** if you're running the SPA from Vite's dev server and pointing it at the now running `rosadmin`, whether using SSO or `fake-login`, you probably want a proxy entry `server.proxy: { "/api": "http://127.0.0.1:<PORT>" }` so it behaves just like a real ~~boy~~ deployment. Otherwise you'll get weird CORS issues since the requests aren't proxied like they are on the live box. (Same reason starting in the terminal and then using the browser won't work).
+
+## Admin Socket
+
+In your `.env` you can set up a socket for some admin calls like so:
+
+```
+ROSADMIN_ADMIN_SOCKET=/tmp/rosadmin-admin.sock
+```
+
+This allows you to run some commands for cycling members between things like dues statuses to make sure they properly disappear from the list and such. This interface is only available on a Unix-like OS via `curl`. This following documents the REST API, all commands are assumed to be prefixed with `curl --unix-socket /tmp/rosadmin-admin.sock -X <method> URL -H 'content-type: application/json' -d <body>`.
+
+Here are some important commands:
+- `POST http://rosadmin/admin/roster/pull`
+  - Commands rosadmin to execute a "pull" from the ST roster. As of now, this is the *only way* to sync your changes. You *must* run this once after boot on a new postgres test container, *and* after every other call that modifies the mock records (basically every command below)
+- `PUT http://rosadmin/admin/personas/member`
+  - Upsert (add/modify) a given email to a given [persona](#personas)
+  - BODY: `{"email": "kris@example.com", "persona": "leader", "discord_id": "<Discord ID>"}`
+    - `discord_id` is optional and only really useful with the `leader` [persona](#personas). It's meant to set the persona to *your* Discord ID for SSO if you forgot to in the environment variables.
+- `DELETE http://rosadmin/admin/personas/member`
+  - Deletes a member from the records
+  - BODY: `{"email": "kris@example.com"}`
+- `POST http://rosadmin/admin/personas/standing`
+  - Updates a member's standing (i.e. Member in Good Standing or Lapsed) without changing the whole [persona](#personas) config.
+  - BODY: `{"email": "kris@example.com", "standing": "lapsed"}`
+    - The two values are `lapsed` (member should disappear from the roster and be unable to log in), and `good_standing` (should appear in the UI and be able to log in if they're a `leader`)
+- `POST http://rosadmin/admin/personas/leadership`
+  - Modify a member's leadership status without changing the whole [persona](#personas)
+  - BODY: `{"email": "kris@example.com", "field": "committee-leadership", "label": "Steering", "present": true}`
+    - Sets the member to be a leader of the given leadership body (there are multiple but for testing just use `committee-leadership` for simplicity). Passing `present` as `true` makes them a leader, `false` removes their leadership.
+
+These let you test behavior manually. **Remember, always run /pull at the end (and refresh the page if using the frontend) or the changes won't reflect**
+
+(Note: there are other commands, but are out of scope for basic dev testing, they're in the larger runbook in our Google Docs.)
+
+### Personas
+
+Personas are basically mock records with a given template. There are a bunch but for testing you probably just want the following:
+
+- `leader`: Allows login, prevents removal from the group. This always makes them a leader of the body with name "Steering" and type "Committee". If you want a different body use the [Admin Socket](#admin-socket).
+- `co_leader`: A second leader for the same group. Mostly to test if you can remove a different leader
+- `good_standing`: Member shows up in email searches and in the admin panel as a group member.
+- `lapsed`: Member has lapsed dues and should not show up in email searches.
+
+You can declare these up front in your `.env` assuming you're running the mock Solidarity Tech server as in previous instructions. Here's some sensible defaults:
+
+```
+SOLIDARITY_TECH_MOCK_PERSONAS=ralsei@example.com=leader:<your discord ID>,kris@example.com=co_leader,susie@example.com=lapsed,noelle@example.com=good_standing
+```
+
+This adds one of each. The `:<your discord ID>` field is optional, but is what lets you log in and be **authorized** (not just authenticated) from your Discord test server as per the setup in [SSO](#sso-flow).
 
 # Questions You Could Theoretically Ask
 

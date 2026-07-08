@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 OK: dict[str, str] = {"status": "200"}
 NOT_FOUND: dict[str, str] = {"status": "404"}
 
-# The monkeypatched _build_services ignores creds; this stands in for the argument.
+# The monkeypatched build_services ignores creds; this stands in for the argument.
 NO_CREDS = cast("Credentials", None)
 
 Pair = tuple[dict[str, str], dict[str, Any]]
@@ -54,8 +54,8 @@ def _install(context, pairs: list[Pair]) -> None:
             build("groupssettings", "v1"),
         )
 
-    context.orig_build = gg._build_services
-    gg._build_services = fake_build_services
+    context.orig_build = gg.build_services
+    gg.build_services = fake_build_services
 
 
 @given("the Google APIs accept a new group after one consistency retry")
@@ -93,8 +93,10 @@ def step_existing(context, gid, name):
     )
 
 
-@given("the Google APIs confirm a member after one visibility retry")
-def step_member_visible(context):
+@given("the Google APIs accept a member insert and nothing more")
+def step_member_insert_only(context):
+    # Exactly one response beyond hydration: if a visibility poll ever creeps
+    # back into add_member, it exhausts this sequence and the scenario fails.
     _install(
         context,
         [
@@ -105,8 +107,6 @@ def step_member_visible(context):
             (OK, {}),  # from_remote settings.get
             (OK, {"labels": {}}),  # from_remote identity.get
             (OK, {}),  # _raw_add_member: members.insert
-            (OK, {"isMember": False}),  # _await_member_add: not yet -> retry
-            (OK, {"isMember": True}),  # _await_member_add: visible
         ],
     )
 

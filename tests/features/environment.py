@@ -78,7 +78,7 @@ def after_scenario(context, scenario) -> None:
     if orig_build is not None:
         import rosadmin.google_group as gg
 
-        gg._build_services = orig_build
+        gg.build_services = orig_build
 
 
 def after_all(context) -> None:

@@ -16,10 +16,16 @@
 #   uv run yoyo apply -b --no-config-file \
 #     -d postgresql+psycopg://rosadmin_app@127.0.0.1:54432/rosadmin_dev \
 #     rosadmin/migrations
-#   ROSADMIN_FAKE_LOGIN=1 \
+#   ROSADMIN_FAKE_LOGIN=1 ROSADMIN_GOOGLE_DRY_RUN=1 \
 #     ROSADMIN_DB_DSN="host=127.0.0.1 port=54432 dbname=rosadmin_dev user=rosadmin_app" \
 #     uv run rosadmin serve
 #   podman compose -f deploy/test-infra/compose.yaml down
+
+# The explicit project name keeps this stack's network (and container names)
+# out of the way of any other compose stack whose file also lives in a
+# directory called `test-infra` - without it, compose derives the project
+# name from the directory and two such stacks fight over `test-infra_default`.
+name: rosadmin-test-infra
 
 services:
   rosadmin_postgres:

@@ -32,6 +32,15 @@ class Identity:
         )
         return f"{shown} {self.last_name}".strip()
 
+    @property
+    def handle(self) -> str:
+        """The chosen display name, lowercased - a stable stem for fabricated
+        addresses (e.g. a persona's fake Gmail alternate)."""
+        shown = (
+            self.alternate_name if self.alternate_name is not None else self.first_name
+        )
+        return shown.lower()
+
 
 #: The fixed cast's display identities, keyed by the email each one is reached by.
 CAST: dict[str, Identity] = {

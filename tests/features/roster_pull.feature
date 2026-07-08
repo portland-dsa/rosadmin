@@ -47,3 +47,28 @@ Feature: The roster pull materializes Solidarity Tech into Postgres
     When Ralsei pulls the roster
     Then "spamton@example.com" is stored as EmptyLeader
     And the pull flags "spamton@example.com" as an anomaly
+
+  Scenario: A manually added member survives a leadership reshape
+    Given the persona roster "ralsei@example.com=leader,kris@example.com=good_standing"
+    When Ralsei pulls the roster
+    And Ralsei manually adds "kris@example.com" to "Steering"
+    Given the persona roster "ralsei@example.com=good_standing,kris@example.com=good_standing,noelle@example.com=leader"
+    When Ralsei pulls the roster
+    Then "kris@example.com" is still a member of "Steering"
+
+  Scenario: Deleting the adding leader's record clears attribution but the manual add survives
+    Given the persona roster "ralsei@example.com=leader,kris@example.com=good_standing"
+    When Ralsei pulls the roster
+    And Ralsei manually adds "kris@example.com" to "Steering"
+    When Susie deletes "ralsei@example.com"'s member record outright
+    Then "kris@example.com" is still a member of "Steering"
+    And the manual-add attribution for "kris@example.com" in "Steering" is cleared but the timestamp remains
+
+  Scenario: The records naming a manual member a leader promotes the row
+    Given the persona roster "ralsei@example.com=leader,kris@example.com=good_standing"
+    When Ralsei pulls the roster
+    And Ralsei manually adds "kris@example.com" to "Steering"
+    Given the persona roster "ralsei@example.com=leader,kris@example.com=leader"
+    When Ralsei pulls the roster
+    Then "kris@example.com" leads "Steering"
+    And the promoted row for "kris@example.com" in "Steering" carries no manual-add provenance

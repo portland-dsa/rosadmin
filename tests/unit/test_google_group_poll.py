@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import json
+
+import httplib2
+import pytest
+
+from googleapiclient.errors import HttpError
+
+from rosadmin.google_group import PropagationTimeout, _poll_until
+
+
+def _http_error(status: str, reason: str | None = None) -> HttpError:
+    # With a reason, the body mimics the Admin SDK's error envelope, which is
+    # where `HttpError.error_details` reads the reason from.
+    # The "message" key matters: the client library only populates
+    # `error_details` when the envelope carries one.
+    content = (
+        json.dumps(
+            {
+                "error": {
+                    "errors": [{"reason": reason, "message": "m"}],
+                    "code": int(status),
+                    "message": "m",
+                }
+            }
+        )
+        if reason is not None
+        else "{}"
+    ).encode()
+    return HttpError(resp=httplib2.Response({"status": status}), content=content)
+
+
+def test_predicate_true_on_first_call_returns_immediately():
+    calls = 0
+
+    def visible() -> bool:
+        nonlocal calls
+        calls += 1
+        return True
+
+    _poll_until(visible)
+    assert calls == 1
+
+
+def test_predicate_false_then_true_retries_until_success():
+    calls = 0
+
+    def visible() -> bool:
+        nonlocal calls
+        calls += 1
+        return calls > 3
+
+    _poll_until(visible, interval=0)
+    assert calls == 4
+
+
+def test_predicate_never_true_raises_propagation_timeout():
+    with pytest.raises(PropagationTimeout):
+        _poll_until(lambda: False, interval=0, ceiling=0.05)
+
+
+def test_predicate_error_propagates_unwrapped():
+    def visible() -> bool:
+        raise ValueError("real failure")
+
+    with pytest.raises(ValueError, match="real failure"):
+        _poll_until(visible, interval=0)
+
+
+def test_transient_http_error_retries_until_success():
+    calls = 0
+
+    def visible() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise _http_error("503")
+        return True
+
+    _poll_until(visible, interval=0)
+    assert calls == 3
+
+
+def test_non_transient_http_error_propagates_immediately():
+    calls = 0
+
+    def visible() -> bool:
+        nonlocal calls
+        calls += 1
+        raise _http_error("403", reason="forbidden")
+
+    with pytest.raises(HttpError):
+        _poll_until(visible, interval=0)
+    assert calls == 1
+
+
+def test_a_rate_limited_403_is_ridden_out_like_a_429():
+    # The Admin SDK reports most Directory rate limiting as a 403 with a
+    # rate-limit reason, not a 429; only the reason separates it from a real
+    # permission failure, which the test above pins as immediately fatal.
+    calls = 0
+
+    def visible() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise _http_error("403", reason="userRateLimitExceeded")
+        return True
+
+    _poll_until(visible, interval=0)
+    assert calls == 3
+
+
+def test_persistent_transient_http_error_raises_propagation_timeout():
+    def visible() -> bool:
+        raise _http_error("503")
+
+    with pytest.raises(PropagationTimeout):
+        _poll_until(visible, interval=0, ceiling=0.05)

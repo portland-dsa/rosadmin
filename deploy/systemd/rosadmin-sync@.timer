@@ -1,0 +1,14 @@
+[Unit]
+Description=4-hourly rosadmin roster pull and reconcile sweep (%i)
+
+[Timer]
+# Every four hours - the cadence the national organization's records propagate
+# into Solidarity Tech, so pulling faster only re-reads the same data. The random
+# delay de-correlates the run from the Discord bot's own Solidarity Tech cycle on
+# the shared box; Persistent catches up a window missed while the box was down.
+OnCalendar=00/4:00:00
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

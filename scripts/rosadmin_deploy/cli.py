@@ -21,6 +21,7 @@ from che_deploya import (
     Component,
     DeploySpec,
     Environment,
+    FilePermissions,
     Secret,
     SharedRestart,
     Stages,
@@ -67,6 +68,10 @@ class ServiceEnv(StrEnum):
     #: the committed template because its entries name real personal emails
     #: (the testers' own accounts) - same privacy line as the subject above.
     StMockPersonas = "st_mock_personas"
+    #: The org-wide Google Group the reconcile sweep syncs the whole
+    #: good-standing roster into - an org address, kept out of the committed
+    #: template like the subject and personas above.
+    MainGroupEmail = "main_group_email"
 
 
 ROSADMIN = DeploySpec(
@@ -93,6 +98,40 @@ ROSADMIN = DeploySpec(
                     src="{repo_root}/deploy/systemd/rosadmin@{stage}.service.d/override.conf",
                     resource_loc="assets/rosadmin@{stage}.service.d/override.conf",
                     dest="/etc/systemd/system/rosadmin@{stage}.service.d/override.conf",
+                    env=Environment(names=frozenset(ServiceEnv)),
+                    per_stage=True,
+                ),
+                # The environment both the web service and the sweep read, so the
+                # tenant and roster cannot drift between them. One rendered file
+                # per stage, referenced by both units through EnvironmentFile=;
+                # root-only, since systemd reads it as root at unit start.
+                TemplatedUnit(
+                    src="{repo_root}/deploy/systemd/rosadmin-shared.env",
+                    resource_loc="assets/rosadmin-shared.env",
+                    dest="/etc/rosadmin/service/{stage}/shared.env",
+                    env=Environment(names=frozenset(ServiceEnv)),
+                    file_mode=FilePermissions.GroupConfig,
+                    # This is the same directory the credentials land in; if
+                    # systemd provisioning creates it before creds provisioning
+                    # does, keep it off world-listable rather than the 0755 default.
+                    dir_mode=FilePermissions.GroupDir,
+                    per_stage=True,
+                ),
+                # The reconcile sweep: a oneshot fired by a 4-hourly timer. The
+                # timer file installs here but is enabled on the box by the head
+                # cheerleader (admin), like the web service's activation.
+                StaticUnit(
+                    src="{repo_root}/deploy/systemd/rosadmin-sync@.service",
+                    dest="/etc/systemd/system/rosadmin-sync@.service",
+                ),
+                StaticUnit(
+                    src="{repo_root}/deploy/systemd/rosadmin-sync@.timer",
+                    dest="/etc/systemd/system/rosadmin-sync@.timer",
+                ),
+                TemplatedUnit(
+                    src="{repo_root}/deploy/systemd/rosadmin-sync@{stage}.service.d/override.conf",
+                    resource_loc="assets/rosadmin-sync@{stage}.service.d/override.conf",
+                    dest="/etc/systemd/system/rosadmin-sync@{stage}.service.d/override.conf",
                     env=Environment(names=frozenset(ServiceEnv)),
                     per_stage=True,
                 ),

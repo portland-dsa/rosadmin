@@ -12,7 +12,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from tests.support.pg import Db, start, truncate
+from tests.support.pg import Db, Rig, start
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -26,14 +26,19 @@ def event_loop_policy():
 
 
 @pytest.fixture(scope="session")
-def database() -> Iterator[Db]:
-    container, db = start()
+def rig() -> Iterator[Rig]:
+    rig = start()
     try:
-        yield db
+        yield rig
     finally:
-        container.stop()
+        rig.stop()
+
+
+@pytest.fixture(scope="session")
+def database(rig: Rig) -> Db:
+    return rig.db
 
 
 @pytest.fixture(autouse=True)
-def _clean(database: Db) -> None:
-    truncate(database)
+def _clean(rig: Rig) -> None:
+    rig.truncate()

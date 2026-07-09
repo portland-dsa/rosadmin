@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useGroupAdmin } from './useGroupAdmin'
 import { LoginScreen } from './components/LoginScreen'
 import { PageHeader } from './components/PageHeader'
@@ -8,11 +9,23 @@ import { Footer } from './components/Footer'
 function App() {
   const app = useGroupAdmin()
 
+  // The auth callback redirects back with ?login=denied when the chapter-leader
+  // gate refuses a verified member. Read it once, then strip it so it doesn't
+  // outlive this landing (a reload or later logout shouldn't re-flash it).
+  const [loginDenied] = useState(
+    () => new URLSearchParams(window.location.search).get('login') === 'denied',
+  )
+  useEffect(() => {
+    if (window.location.search) {
+      window.history.replaceState(null, '', window.location.pathname)
+    }
+  }, [])
+
   if (app.sessionLoading) {
     return <main className="loading">Loading...</main>
   }
   if (!app.session) {
-    return <LoginScreen onLogin={app.login} />
+    return <LoginScreen onLogin={app.login} denied={loginDenied} />
   }
 
   const filterTerm = app.mode === 'filter' ? app.query.trim() : ''

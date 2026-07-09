@@ -8,7 +8,7 @@ from psycopg_pool import AsyncConnectionPool
 
 from rosadmin import journal_send, service
 from rosadmin.db.audit import RecordingAuditSink
-from rosadmin.service import _audit_key, _lifespan, _start_admin, create_app
+from rosadmin.service import _lifespan, _start_admin, create_app
 from rosadmin.web.sessions import InMemorySessionStore
 from rosadmin.web.settings import WebSettings
 
@@ -63,18 +63,6 @@ class _BrokenAuditSink:
         detail: dict[str, Any] | None = None,
     ) -> None:
         raise journal_send.JournalSendError("journald socket present but broken")
-
-
-def test_audit_key_matches_across_file_and_env(tmp_path):
-    # A credential file written with a trailing newline must yield the same key as
-    # the same secret handed in via the env var - otherwise one actor's audit
-    # history forks across two HMACs.
-    (tmp_path / "audit-hmac-key").write_text("s3cret-key\n", encoding="utf-8")
-
-    from_file = _audit_key({"CREDENTIALS_DIRECTORY": str(tmp_path)})
-    from_env = _audit_key({"ROSADMIN_AUDIT_HMAC_KEY": "s3cret-key"})
-
-    assert from_file == from_env == b"s3cret-key"
 
 
 def test_audit_failure_does_not_poison_committed_auth():

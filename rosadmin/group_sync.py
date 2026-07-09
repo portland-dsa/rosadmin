@@ -22,8 +22,9 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from enum import Enum
-from typing import TYPE_CHECKING, Protocol, TypeAlias
+from typing import TYPE_CHECKING, Protocol, TypeAlias, runtime_checkable
 
+from googleapiclient import discovery
 from googleapiclient.errors import HttpError
 
 from rosadmin.auth import get_credentials
@@ -31,9 +32,11 @@ from rosadmin.google_group import (
     SECURE_SETTINGS,
     SECURITY_LABEL,
     GoogleGroup,
+    GroupMemberEntry,
     build_services,
+    list_group_members,
 )
-from rosadmin.membership.source import Email
+from rosadmin.membership.source import Email, sync_email
 
 if TYPE_CHECKING:
     from google.oauth2.service_account import Credentials
@@ -54,6 +57,36 @@ logger = logging.getLogger(__name__)
 #: email. Never mirrored; `records` also consults it when resolving a sync
 #: target, so an example-primary record cannot dodge the gate via an alternate.
 EXAMPLE_DOMAIN = "@example.com"
+
+
+@runtime_checkable
+class SyncAddresses(Protocol):
+    """A row carrying the two address columns `sync_target` consults.
+
+    Read-only properties so frozen row dataclasses satisfy it structurally.
+    """
+
+    @property
+    def email(self) -> str: ...
+    @property
+    def alternate_email(self) -> str | None: ...
+
+
+def sync_target(row: SyncAddresses) -> Email:
+    """The address a Google membership operation targets, per `sync_email`.
+
+    A record whose primary is an example-domain address is an unusable or
+    fabricated record wholesale, so it never redirects to an alternate: the
+    skip gate must see the example primary and skip, not a plausible gmail
+    alternate it would happily deliver to. Without this, a fabricated test
+    persona carrying a made-up gmail alternate would sail through the gate
+    and really be invited on a live tenant.
+    """
+    primary = Email(row.email)
+    if primary.lower().endswith(EXAMPLE_DOMAIN):
+        return primary
+    alternate = Email(row.alternate_email) if row.alternate_email else None
+    return sync_email(primary, alternate)
 
 
 class SyncOutcome(Enum):
@@ -77,6 +110,49 @@ class GroupSync(Protocol):
     async def remove(
         self, group_email: Email | None, member_email: Email
     ) -> SyncOutcome: ...
+
+
+class GroupLister(Protocol):
+    """The read side of the Google boundary: one group's remote member list."""
+
+    async def list(self, group_email: Email) -> list[GroupMemberEntry]: ...
+
+
+class GoogleGroupLister:
+    """The real lister. Builds only the Admin Directory client per call - the
+    one client a membership listing touches."""
+
+    def __init__(self, creds: Credentials) -> None:
+        self._creds = creds
+
+    async def list(self, group_email: Email) -> list[GroupMemberEntry]:
+        admin = await asyncio.to_thread(
+            discovery.build,
+            "admin",
+            "directory_v1",
+            credentials=self._creds,
+            cache_discovery=False,
+        )
+        return await asyncio.to_thread(list_group_members, admin, group_email)
+
+
+def group_lister_from_env(env: Mapping[str, str]) -> GroupLister | None:
+    """The lister a sweep uses, or None when the environment forbids Google reads.
+
+    `ROSADMIN_GOOGLE_DRY_RUN=1` means no Workspace calls of any kind, reads
+    included - the caller degrades to a desired-state-only report. Otherwise
+    credentials are demanded up front, same as `group_sync_from_env`.
+    """
+    if env.get("ROSADMIN_GOOGLE_DRY_RUN") == "1":
+        return None
+    subject = _subject_from_env(env)
+    try:
+        creds = get_credentials(subject)
+    except EnvironmentError as error:
+        raise RuntimeError(
+            f"google lister credentials are not configured: {error}"
+        ) from error
+    return GoogleGroupLister(creds)
 
 
 def _skip_gate(

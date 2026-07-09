@@ -72,3 +72,28 @@ Feature: The roster pull materializes Solidarity Tech into Postgres
     When Ralsei pulls the roster
     Then "kris@example.com" leads "Steering"
     And the promoted row for "kris@example.com" in "Steering" carries no manual-add provenance
+
+  Scenario: A member who vanishes from the records lapses
+    Given the persona roster "ralsei@example.com=leader,kris@example.com=good_standing"
+    When Ralsei pulls the roster
+    Given the persona roster "ralsei@example.com=leader"
+    When Ralsei pulls the roster
+    Then "kris@example.com" is stored with standing "lapsed"
+    And the pull lapsed 1 absent member
+
+  Scenario: A vanished member who returns is restored to good standing
+    Given the persona roster "ralsei@example.com=leader,kris@example.com=good_standing"
+    When Ralsei pulls the roster
+    Given the persona roster "ralsei@example.com=leader"
+    When Ralsei pulls the roster
+    Given the persona roster "ralsei@example.com=leader,kris@example.com=good_standing"
+    When Ralsei pulls the roster
+    Then "kris@example.com" is stored with standing "good_standing"
+
+  Scenario: An empty upstream refuses to lapse the whole roster
+    Given the persona roster "ralsei@example.com=leader,kris@example.com=good_standing,susie@example.com=good_standing,noelle@example.com=good_standing,berdly@example.com=good_standing,spamton@example.com=good_standing"
+    When Ralsei pulls the roster
+    Given an empty persona roster
+    When Ralsei pulls the roster
+    Then every member is still in good standing
+    And the pull refused to lapse 6 members

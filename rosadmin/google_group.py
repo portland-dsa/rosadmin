@@ -36,14 +36,17 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from enum import Enum
+from typing import TYPE_CHECKING, Optional, TypeVar
 
 from tenacity import (
     RetryError,
     Retrying,
     retry_if_exception,
     retry_if_result,
+    stop_after_attempt,
     stop_after_delay,
+    wait_exponential_jitter,
     wait_fixed,
 )
 
@@ -171,6 +174,27 @@ def _poll_until(
         raise PropagationTimeout("change accepted but not yet visible") from error
 
 
+_T = TypeVar("_T")
+
+
+def _retry_transient(call: Callable[[], _T]) -> _T:
+    """Run one blocking API call, waiting out transient failures.
+
+    Quota signals (429, rate-limited 403) and server errors (5xx) get
+    exponential backoff with jitter; anything else - a 404, a 409, a real
+    403 - propagates immediately, because those are verdicts, not weather.
+    Synchronous on purpose: every caller already runs inside
+    ``asyncio.to_thread``.
+    """
+    retrying = Retrying(
+        retry=retry_if_exception(_is_transient_http_error),
+        wait=wait_exponential_jitter(initial=1.0, max=30.0),
+        stop=stop_after_attempt(6),
+        reraise=True,
+    )
+    return retrying(call)
+
+
 def build_services(
     creds: Credentials,
 ) -> tuple[DirectoryResource, CloudIdentityResource, GroupssettingsResource]:
@@ -197,13 +221,80 @@ def build_services(
     return admin, identity, settings
 
 
+class GroupsPermissionLevel(Enum):
+    """A member's Google Workspace permission over a group.
+
+    This is Google's own membership level - the value the Directory API
+    returns for every entry in a group's member list - and is deliberately
+    NOT the organization's elected leader/member role, which is a separate
+    concept stored on `body_memberships`. The reconcile sweep only ever
+    removes plain `Member` entries, so an `Owner`, a `Manager`, or an
+    `Other` (any level Google reports that this code does not model) is
+    left untouched.
+    """
+
+    Owner = "OWNER"
+    Manager = "MANAGER"
+    Member = "MEMBER"
+    Other = "OTHER"
+
+    @classmethod
+    def _missing_(cls, value: object) -> GroupsPermissionLevel:
+        # A level Google reports that is not one of the three we model maps
+        # to Other, which the sweep never removes - an unrecognized level
+        # must never be mistaken for a plain member and swept out.
+        return cls.Other
+
+
 @dataclass(frozen=True)
 class GroupMemberEntry:
     """One row of a group's remote member list."""
 
     email: str
-    role: str
+    permission_level: GroupsPermissionLevel
     status: str | None
+    type: str | None
+
+
+def list_group_members(admin: DirectoryResource, email: str) -> list[GroupMemberEntry]:
+    """Page through `email`'s membership via Admin Directory alone.
+
+    Module-level so a caller that only needs the Admin Directory client (the
+    reconcile sweep's lister) can page a group's members without hydrating a
+    full `GoogleGroup`, which would also build the Cloud Identity and Groups
+    Settings clients neither caller touches.
+    """
+    entries: list[GroupMemberEntry] = []
+    token: str | None = None
+    while True:
+        request = (
+            admin.members().list(groupKey=email, maxResults=200, pageToken=token)
+            if token is not None
+            else admin.members().list(groupKey=email, maxResults=200)
+        )
+        page = _retry_transient(request.execute)
+        for m in page.get("members", []):
+            if "email" not in m or "role" not in m:
+                # A CUSTOMER-type member (an admin adding the whole domain)
+                # legitimately carries no email; a listing is a bulk read, so
+                # skip and note it rather than refusing the whole group.
+                logger.warning(
+                    "skipping %s member entry with no address in %s",
+                    m.get("type", "unknown-type"),
+                    email,
+                )
+                continue
+            entries.append(
+                GroupMemberEntry(
+                    email=m["email"],
+                    permission_level=GroupsPermissionLevel(m["role"]),
+                    status=m.get("status"),
+                    type=m.get("type"),
+                )
+            )
+        token = page.get("nextPageToken")
+        if not token:
+            return entries
 
 
 class GoogleGroup:
@@ -318,7 +409,7 @@ class GoogleGroup:
         ).execute()
         _poll_until(self._settings_match)
 
-    def _raw_add_member(self, email: str, role: str) -> None:
+    def _raw_add_member(self, email: str, level: GroupsPermissionLevel) -> None:
         """Insert a member via Admin Directory.
 
         No visibility poll: unlike creation (which spans three APIs), a
@@ -328,14 +419,16 @@ class GoogleGroup:
         to be *listable* immediately (the live lifecycle test) polls on its
         own read instead.
         """
-        self._admin.members().insert(
+        request = self._admin.members().insert(
             groupKey=self.email,
-            body={"email": email, "role": role},
-        ).execute()
+            body={"email": email, "role": level.value},
+        )
+        _retry_transient(request.execute)
 
     def _raw_remove_member(self, email: str) -> None:
         """Delete a member via Admin Directory. Same no-poll contract as adding."""
-        self._admin.members().delete(groupKey=self.email, memberKey=email).execute()
+        request = self._admin.members().delete(groupKey=self.email, memberKey=email)
+        _retry_transient(request.execute)
 
     def _raw_delete(self, missing_ok: bool) -> None:
         """Delete the group via Admin Directory and wait until it's gone.
@@ -353,27 +446,7 @@ class GoogleGroup:
                 raise
 
     def _raw_list_members(self) -> list[GroupMemberEntry]:
-        members = (
-            self._admin.members().list(groupKey=self.email).execute().get("members", [])
-        )
-        entries: list[GroupMemberEntry] = []
-        for m in members:
-            if "email" not in m or "role" not in m:
-                # A CUSTOMER-type member (an admin adding the whole domain)
-                # legitimately carries no email; a listing is a bulk read, so
-                # skip and note it rather than refusing the whole group.
-                logger.warning(
-                    "skipping %s member entry with no address in %s",
-                    m.get("type", "unknown-type"),
-                    self.email,
-                )
-                continue
-            entries.append(
-                GroupMemberEntry(
-                    email=m["email"], role=m["role"], status=m.get("status")
-                )
-            )
-        return entries
+        return list_group_members(self._admin, self.email)
 
     def _raw_get_settings(self) -> SettingsGroup:
         return self._settings.groups().get(groupUniqueId=self.email).execute()
@@ -432,12 +505,16 @@ class GoogleGroup:
         self.settings_group = new_settings
         await asyncio.to_thread(self._raw_configure)
 
-    async def add_member(self, email: str, role: str = "MEMBER") -> None:
-        """Add a member to the group. ``role`` is ``"MEMBER"`` by default; ``"OWNER"`` and ``"MANAGER"`` are also valid."""
-        await asyncio.to_thread(self._raw_add_member, email, role)
+    async def add_member(
+        self, email: str, level: GroupsPermissionLevel = GroupsPermissionLevel.Member
+    ) -> None:
+        """Add a member to the group. ``level`` is ``GroupsPermissionLevel.Member`` by
+        default; ``GroupsPermissionLevel.Owner`` and ``GroupsPermissionLevel.Manager``
+        are also valid."""
+        await asyncio.to_thread(self._raw_add_member, email, level)
 
     async def list_members(self) -> list[GroupMemberEntry]:
-        """Returns a list of all members in the group. This currently does not support pagination."""
+        """Return every member across all pages of the remote list."""
         return await asyncio.to_thread(self._raw_list_members)
 
     async def remove_member(self, email: str) -> None:

@@ -30,10 +30,13 @@ API_BASE_URL = "https://api.solidarity.tech/v1"
 #: the cap only bounds the roster sweep's page size.
 PAGE_SIZE = 100
 
-#: The pacer's budget: Solidarity Tech allows 60 requests per 30 seconds, and
-#: 55 leaves a margin so a window-boundary race cannot trip the limit. The
-#: leaky bucket lets a pull burst through its first pages at full speed and
-#: only then settles to the steady rate.
+#: The pacer's default budget: Solidarity Tech allows 60 requests per 30
+#: seconds, and 55 leaves a margin so a window-boundary race cannot trip the
+#: limit. The leaky bucket lets a pull burst through its first pages at full
+#: speed and only then settles to the steady rate. This is this client's
+#: default *share* of that budget - a deployment where another consumer also
+#: holds the key sets `SOLIDARITY_TECH_REQUEST_BUDGET` so the shares sum
+#: under the limit.
 _REQUESTS_PER_WINDOW = 55
 
 #: How many times a 429 is waited out before it is surfaced to the caller.
@@ -59,6 +62,8 @@ class SolidarityTechClient:
         token: str,
         base_url: str | None = None,
         client: httpx.AsyncClient | None = None,
+        *,
+        requests_per_window: int | None = None,
     ) -> None:
         self._token = token
         resolved = (
@@ -66,7 +71,12 @@ class SolidarityTechClient:
         )
         self._base_url = resolved.rstrip("/")
         self._client = client or httpx.AsyncClient()
-        self._limiter = AsyncLimiter(_REQUESTS_PER_WINDOW, _RATE_LIMIT_WINDOW)
+        self._limiter = AsyncLimiter(
+            requests_per_window
+            if requests_per_window is not None
+            else _REQUESTS_PER_WINDOW,
+            _RATE_LIMIT_WINDOW,
+        )
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> SolidarityTechClient:
@@ -84,7 +94,26 @@ class SolidarityTechClient:
         Truthy: the mock. `SOLIDARITY_TECH_BASE_URL` is required - refusing to
         guess a mock target rather than silently falling through to the real API
         - and the token is optional, since the mock ignores auth.
+
+        `SOLIDARITY_TECH_REQUEST_BUDGET`, when set, overrides this client's
+        share of the key's request budget in either branch - a deployment
+        sharing the token with another consumer lowers it so the shares sum
+        under Solidarity Tech's own limit.
         """
+        budget_raw = env.get("SOLIDARITY_TECH_REQUEST_BUDGET")
+        budget: int | None = None
+        if budget_raw is not None:
+            try:
+                budget = int(budget_raw)
+            except ValueError as error:
+                raise RuntimeError(
+                    "SOLIDARITY_TECH_REQUEST_BUDGET must be a positive integer"
+                ) from error
+            if budget < 1:
+                raise RuntimeError(
+                    "SOLIDARITY_TECH_REQUEST_BUDGET must be a positive integer"
+                )
+
         if env.get("SOLIDARITY_TECH_MOCK"):
             base_url = env.get("SOLIDARITY_TECH_BASE_URL")
             if not base_url:
@@ -96,7 +125,7 @@ class SolidarityTechClient:
                 read_credential(env, "solidarity_tech_token", "SOLIDARITY_TECH_TOKEN")
                 or ""
             )
-            return cls(token=token, base_url=base_url)
+            return cls(token=token, base_url=base_url, requests_per_window=budget)
 
         token = read_credential(env, "solidarity_tech_token", "SOLIDARITY_TECH_TOKEN")
         if token is None:
@@ -106,7 +135,11 @@ class SolidarityTechClient:
             )
         # Resolve the base URL from the passed mapping, not the process environment,
         # so `from_env` honors its `env` argument consistently in both branches.
-        return cls(token=token, base_url=env.get("SOLIDARITY_TECH_BASE_URL"))
+        return cls(
+            token=token,
+            base_url=env.get("SOLIDARITY_TECH_BASE_URL"),
+            requests_per_window=budget,
+        )
 
     def _headers(self) -> dict[str, str]:
         # The mock ignores auth and `from_env`'s mock branch allows an empty

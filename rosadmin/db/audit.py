@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -19,8 +20,25 @@ from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 from rosadmin import journal_send
+from rosadmin.credentials import read_credential
 
 _log = logging.getLogger(__name__)
+
+
+def audit_key_from_env(env: Mapping[str, str]) -> bytes:
+    """The audit HMAC key: a systemd credential on the box, env var in dev.
+
+    Read through the shared [`read_credential`] from
+    `$CREDENTIALS_DIRECTORY/audit-hmac-key` (how systemd delivers it) or
+    `ROSADMIN_AUDIT_HMAC_KEY`. That the two delivery paths agree byte-for-byte
+    matters here in particular: were a credential file's trailing newline to
+    yield a different key than the same secret set inline, one actor's audit
+    history would silently fork across two HMACs. The key is never logged.
+    """
+    raw = read_credential(env, "audit-hmac-key", "ROSADMIN_AUDIT_HMAC_KEY")
+    if raw is None:
+        raise RuntimeError("audit HMAC key is not configured")
+    return raw.encode()
 
 
 class AuditUnrecordedError(Exception):

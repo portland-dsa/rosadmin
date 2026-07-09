@@ -74,6 +74,15 @@ def step_roster(context, spec):
     context.app = create_app(parse_map(spec))
 
 
+@given("an empty persona roster")
+def step_empty_roster(context):
+    # A literal, unquoted step: the quoted `"{spec}"` matcher above rejects an
+    # empty string outright, but `parse_map` itself handles "" fine - this is
+    # the genuinely empty (or wholly truncated) upstream page the fuse guards.
+    context.persona_spec = ""
+    context.app = create_app(parse_map(""))
+
+
 @when("Ralsei pulls the roster")
 def step_pull(context):
     members = _read_members(context.app)
@@ -238,3 +247,32 @@ def step_promotion_clears_provenance(context, email, body):
         (email, body),
     )
     assert rows == [(None, None)], rows
+
+
+@then('"{email}" is stored with standing "{standing}"')
+def step_member_standing(context, email, standing):
+    ((actual,),) = _query(
+        context.db.app_dsn, "SELECT standing FROM members WHERE email = %s", (email,)
+    )
+    assert actual.value == standing, f"standing is {actual.value}, expected {standing}"
+
+
+@then("the pull lapsed {count:d} absent member")
+@then("the pull lapsed {count:d} absent members")
+def step_pull_lapsed(context, count):
+    assert context.report.absent_lapsed == count
+
+
+@then("every member is still in good standing")
+def step_all_good_standing(context):
+    ((n,),) = _query(
+        context.db.app_dsn,
+        "SELECT count(*) FROM members WHERE standing != 'good_standing'",
+    )
+    assert n == 0
+
+
+@then("the pull refused to lapse {count:d} member")
+@then("the pull refused to lapse {count:d} members")
+def step_lapse_refused(context, count):
+    assert context.report.lapse_refused == count

@@ -7,9 +7,7 @@ import logging
 import os
 import sys
 
-from testcontainers.postgres import PostgresContainer
-
-from tests.support.pg import Db, start, truncate
+from tests.support.pg import Rig, start
 
 # httpx emits INFO-level request logs by default; silence them so the behave
 # output stays clean for offline/contract scenarios.
@@ -19,8 +17,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 #: `context`: behave discards an attribute set in `before_scenario` when it
 #: pops that scenario's own context layer at `after_scenario`, so storing the
 #: container there would restart it on every `@db` scenario instead of once.
-_db_container: PostgresContainer | None = None
-_db: Db | None = None
+_rig: Rig | None = None
 
 
 def _has_google_creds() -> bool:
@@ -50,7 +47,7 @@ def before_scenario(context, scenario) -> None:
     (smoke, google_group_offline, contract) never touch this and so never need
     a container.
     """
-    global _db_container, _db
+    global _rig
 
     if "live" in scenario.effective_tags and not (
         _has_google_creds() or _has_st_token()
@@ -60,11 +57,11 @@ def before_scenario(context, scenario) -> None:
         )
 
     if "db" in scenario.effective_tags:
-        if _db is None:
-            _db_container, _db = start()
+        if _rig is None:
+            _rig = start()
         else:
-            truncate(_db)
-        context.db = _db
+            _rig.truncate()
+        context.db = _rig.db
 
 
 def after_scenario(context, scenario) -> None:
@@ -83,5 +80,5 @@ def after_scenario(context, scenario) -> None:
 
 def after_all(context) -> None:
     """Stop the shared Postgres rig if any `@db` scenario started it."""
-    if _db_container is not None:
-        _db_container.stop()
+    if _rig is not None:
+        _rig.stop()

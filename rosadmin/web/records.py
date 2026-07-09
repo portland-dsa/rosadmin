@@ -45,8 +45,8 @@ from rosadmin.db.mutations import (
     is_leader_of,
     member_row_by_id,
 )
-from rosadmin.group_sync import EXAMPLE_DOMAIN, GroupSync
-from rosadmin.membership.source import Email, Standing, sync_email
+from rosadmin.group_sync import GroupSync, sync_target
+from rosadmin.membership.source import Email, Standing
 from rosadmin.web.models import (
     Group,
     GroupMember,
@@ -86,23 +86,6 @@ async def _resolve_member(pool: AsyncConnectionPool, principal: Principal) -> Me
     if row is None:
         raise AppProblem(404, ProblemCode.NotFound, "unknown principal")
     return row
-
-
-def _sync_target(target: MemberRow) -> Email:
-    """The address a mutation's Google mirror call targets, per `sync_email`.
-
-    A record whose primary is an example-domain address is an unusable or
-    fabricated record wholesale, so it never redirects to an alternate: the
-    sync's skip gate must see the example primary and skip, not a plausible
-    gmail alternate it would happily deliver to. Without this, a fabricated
-    test persona carrying a made-up `@gmail.com` alternate would sail through
-    the gate and really be invited on a live tenant.
-    """
-    primary = Email(target.email)
-    if primary.lower().endswith(EXAMPLE_DOMAIN):
-        return primary
-    alternate = Email(target.alternate_email) if target.alternate_email else None
-    return sync_email(primary, alternate)
 
 
 def _group_email(link: BodyLinkRow) -> Email | None:
@@ -230,7 +213,7 @@ class RecordsGroupModify:
         target: MemberRow,
         group_email: Email | None,
     ) -> None:
-        outcome = await self._group_sync.add(group_email, _sync_target(target))
+        outcome = await self._group_sync.add(group_email, sync_target(target))
         await record_best_effort(
             self._audit_sink,
             "group.member_added",
@@ -247,7 +230,7 @@ class RecordsGroupModify:
         target: MemberRow,
         group_email: Email | None,
     ) -> None:
-        outcome = await self._group_sync.remove(group_email, _sync_target(target))
+        outcome = await self._group_sync.remove(group_email, sync_target(target))
         await record_best_effort(
             self._audit_sink,
             "group.member_removed",

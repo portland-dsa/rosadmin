@@ -10,6 +10,7 @@ logging.basicConfig(level=logging.INFO)
 
 from rosadmin.commands.one_shot import one_shot_app
 from rosadmin.commands.roster import roster_app
+from rosadmin.commands.sync import sync_app
 
 app = App(
     name="rosadmin",
@@ -18,6 +19,7 @@ app = App(
 
 app.command(one_shot_app)
 app.command(roster_app)
+app.command(sync_app)
 
 
 def _listen_target(env: Mapping[str, str]) -> int | None:

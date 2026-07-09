@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httplib2
 import pytest
 
 from googleapiclient.errors import HttpError
 
-from rosadmin.google_group import PropagationTimeout, _poll_until
+from rosadmin.google_group import PropagationTimeout, _poll_until, _retry_transient
 
 
 def _http_error(status: str, reason: str | None = None) -> HttpError:
@@ -118,3 +119,31 @@ def test_persistent_transient_http_error_raises_propagation_timeout():
 
     with pytest.raises(PropagationTimeout):
         _poll_until(visible, interval=0, ceiling=0.05)
+
+
+class _FlakyCall:
+    """A callable failing with the given errors before finally succeeding."""
+
+    def __init__(self, errors: list[Exception], result: Any) -> None:
+        self._errors = list(errors)
+        self._result = result
+        self.calls = 0
+
+    def __call__(self) -> Any:
+        self.calls += 1
+        if self._errors:
+            raise self._errors.pop(0)
+        return self._result
+
+
+def test_retry_transient_waits_out_a_429_then_returns() -> None:
+    call = _FlakyCall([_http_error("429")], result="ok")
+    assert _retry_transient(call) == "ok"
+    assert call.calls == 2
+
+
+def test_retry_transient_propagates_a_404_immediately() -> None:
+    call = _FlakyCall([_http_error("404")], result="never")
+    with pytest.raises(HttpError):
+        _retry_transient(call)
+    assert call.calls == 1

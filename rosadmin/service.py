@@ -32,9 +32,13 @@ from fastapi import FastAPI
 from psycopg_pool import AsyncConnectionPool
 
 from rosadmin import systemd_notify
-from rosadmin.credentials import read_credential
 from rosadmin.db import dsn_from_env, make_pool
-from rosadmin.db.audit import AuditSink, PostgresAuditSink, RecordingAuditSink
+from rosadmin.db.audit import (
+    AuditSink,
+    PostgresAuditSink,
+    RecordingAuditSink,
+    audit_key_from_env,
+)
 from rosadmin.db.jti import PostgresJtiCache
 from rosadmin.db.rate_limit import PostgresRateLimiter
 from rosadmin.db.sessions import PostgresSessionStore
@@ -80,7 +84,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await pool.open()
         app.state.pool = pool
         app.state.session_store = PostgresSessionStore(pool)
-        app.state.audit_sink = PostgresAuditSink(pool, _audit_key(os.environ))
+        app.state.audit_sink = PostgresAuditSink(pool, audit_key_from_env(os.environ))
         app.state.sso = sso_config_from_env(os.environ)
         app.state.jti_cache = PostgresJtiCache(pool)
         app.state.rate_limiter = PostgresRateLimiter(pool)
@@ -230,22 +234,6 @@ def _devtools_active(settings: WebSettings) -> bool:
         settings.fake_login_enabled
         and importlib.util.find_spec("rosadmin_devtools") is not None
     )
-
-
-def _audit_key(env: Mapping[str, str]) -> bytes:
-    """The audit HMAC key: a systemd credential on the box, env var in dev.
-
-    Read through the shared [`read_credential`] from
-    `$CREDENTIALS_DIRECTORY/audit-hmac-key` (how systemd delivers it) or
-    `ROSADMIN_AUDIT_HMAC_KEY`. That the two delivery paths agree byte-for-byte
-    matters here in particular: were a credential file's trailing newline to
-    yield a different key than the same secret set inline, one actor's audit
-    history would silently fork across two HMACs. The key is never logged.
-    """
-    raw = read_credential(env, "audit-hmac-key", "ROSADMIN_AUDIT_HMAC_KEY")
-    if raw is None:
-        raise RuntimeError("audit HMAC key is not configured")
-    return raw.encode()
 
 
 def create_app(

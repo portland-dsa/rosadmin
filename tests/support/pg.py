@@ -3,10 +3,10 @@
 An ephemeral `postgres:18` container - the same engine as the box - with the
 schema and least-privilege grants applied through the real yoyo migrations, and
 the runtime app role joined to the group role those grants target. pytest's
-`database` fixture and behave's `@db`-tagged scenarios both build on `start`
-and `truncate`, so the two runners share one rig instead of drifting copies.
-Tests connect as the container superuser to seed or inspect rows, or as the
-app role to prove the grants.
+`database` fixture and behave's `@db`-tagged scenarios both build on the `Rig`
+that `start` returns, so the two runners share one rig instead of drifting
+copies. Tests connect as the container superuser to seed or inspect rows, or as
+the app role to prove the grants.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import psycopg
 from psycopg import sql
@@ -115,11 +116,46 @@ def _ensure_docker_host() -> None:
     os.environ["DOCKER_HOST"] = "npipe://" + pipe.replace("\\", "/")
 
 
-def start() -> tuple[PostgresContainer, Db]:
+_TRUNCATE_ALL = "TRUNCATE " + ", ".join(_TABLES) + " RESTART IDENTITY CASCADE"
+
+
+@dataclass
+class Rig:
+    """The running test database: container, DSNs, and one maintenance line.
+
+    The maintenance connection exists because the Podman/WSL host-side port
+    forward intermittently refuses fresh connects for a beat: one connection
+    opened at startup and reused for every truncation keeps the per-test hot
+    path off that flaky first hop entirely. A drop (a machine sleep, a
+    container hiccup) is repaired by exactly one reconnect-and-retry - a
+    second failure is a real outage and deserves to surface.
+    """
+
+    container: PostgresContainer
+    db: Db
+    _maintenance: psycopg.Connection[Any]
+
+    def truncate(self) -> None:
+        """Empty every domain table, restarting identities, between tests."""
+        try:
+            self._maintenance.execute(_TRUNCATE_ALL)
+        except psycopg.OperationalError:
+            self._maintenance = _connect(self.db.superuser_dsn)
+            self._maintenance.execute(_TRUNCATE_ALL)
+
+    def stop(self) -> None:
+        try:
+            self._maintenance.close()
+        except psycopg.Error:
+            pass  # the container is going away regardless
+        self.container.stop()
+
+
+def start() -> Rig:
     """Start the container, provision the roles, apply migrations.
 
-    Returns the running container alongside its `Db` DSNs, so the caller
-    controls the container's lifetime - a pytest fixture's try/finally, or
+    Returns the running rig - container, DSNs, and maintenance connection -
+    so the caller controls its lifetime - a pytest fixture's try/finally, or
     behave's manual stop in `after_all`.
     """
     _ensure_docker_host()
@@ -166,14 +202,7 @@ def start() -> tuple[PostgresContainer, Db]:
             container, user=_APP_ROLE, password=_APP_PASSWORD, dbname=container.dbname
         ),
     )
-    return container, db
-
-
-def truncate(db: Db) -> None:
-    """Empty every domain table, restarting identities, between isolated tests."""
-    statement = "TRUNCATE " + ", ".join(_TABLES) + " RESTART IDENTITY CASCADE"
-    with _connect(db.superuser_dsn) as conn:
-        conn.execute(statement)
+    return Rig(container=container, db=db, _maintenance=_connect(superuser))
 
 
 def one_row[R](cursor: psycopg.Cursor[R]) -> R:

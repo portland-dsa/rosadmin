@@ -6,6 +6,12 @@ failure rolls it all back and a retry is always safe. Each member is upserted
 under its own savepoint, though, so a single record clashing with another's
 unique email or Discord id is skipped and reported, not fatal. Solidarity Tech
 is read-only to this codebase, so the only store a pull can affect is this one.
+A known accepted edge: a record that transiently fails decode client-side is
+just as invisible to the pull as a genuine absence, so it lapses the same way
+and self-restores on the next clean pull. A pull that would lapse an
+implausible share of the good-standing roster in one pass refuses the lapse
+outright instead of applying it - see `LAPSE_FUSE_FLOOR` and
+`LAPSE_FUSE_FRACTION`.
 
 There are two entry points that can call `pull_roster` (the CLI and the admin
 socket's pull route), and nothing outside this function serializes them. The
@@ -18,6 +24,7 @@ wrote and re-applies the same upserts, which are idempotent.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -101,6 +108,41 @@ _DELETE_STALE_LEADER_ROWS = """
       )
 """
 
+#: Members present in the database but absent from this pull lost their
+#: records upstream - deleted, or moved out of the chapter - which is
+#: functionally a lapse: no access, and restored the same way if they
+#: return. Members this pull SKIPPED on a unique-constraint clash are
+#: excluded by st_id: they are present upstream, just unstorable, and a
+#: data bug must not cost them their standing.
+_LAPSE_ABSENT_MEMBERS = """
+    UPDATE members
+    SET standing = 'lapsed'
+    WHERE standing = 'good_standing'
+      AND NOT (id = ANY(%(present_member_ids)s::uuid[]))
+      AND NOT (st_id = ANY(%(skipped_st_ids)s::bigint[]))
+"""
+
+#: A pull that would lapse more than this many currently good-standing members -
+#: or more than LAPSE_FUSE_FRACTION of them, whichever is larger - is refusing an
+#: implausible mass absence. Genuine absences (a member deleted from or moved out
+#: of Solidarity Tech) are a trickle; a large one means the pull itself is broken
+#: (an empty or truncated upstream, a decoder-wide failure), so the lapse is
+#: refused rather than stripping standing from most of the roster. Mirrors the
+#: reconcile sweep's removal fuse.
+LAPSE_FUSE_FLOOR = 5
+LAPSE_FUSE_FRACTION = 0.10
+
+_COUNT_LAPSE_CANDIDATES = """
+    SELECT
+        count(*) FILTER (
+            WHERE NOT (id = ANY(%(present_member_ids)s::uuid[]))
+              AND NOT (st_id = ANY(%(skipped_st_ids)s::bigint[]))
+        ) AS would_lapse,
+        count(*) AS good_standing_total
+    FROM members
+    WHERE standing = 'good_standing'
+"""
+
 
 @dataclass(frozen=True)
 class PullAnomaly:
@@ -119,6 +161,8 @@ class PullReport:
     leader_rows: int
     anomalies: list[PullAnomaly]
     skipped_st_ids: list[int]
+    absent_lapsed: int
+    lapse_refused: int
 
 
 #: Attempts a pull makes before letting a serialization failure propagate. A
@@ -243,10 +287,33 @@ async def _pull_in(conn: psycopg.AsyncConnection, members: list[Member]) -> Pull
         await conn.execute(_INSERT_LEADER_ROWS, reconcile_params)
         await conn.execute(_DELETE_STALE_LEADER_ROWS, reconcile_params)
 
+        lapse_params = {
+            "present_member_ids": present_member_ids,
+            "skipped_st_ids": skipped_st_ids,
+        }
+        count_cursor = await conn.execute(_COUNT_LAPSE_CANDIDATES, lapse_params)
+        count_row = await count_cursor.fetchone()
+        assert count_row is not None
+        would_lapse, good_standing_total = count_row
+        budget = max(
+            LAPSE_FUSE_FLOOR, math.ceil(good_standing_total * LAPSE_FUSE_FRACTION)
+        )
+        if would_lapse > budget:
+            # An implausible mass absence: refuse the lapse and report it so the
+            # caller stops and is seen, rather than stripping standing wholesale.
+            absent_lapsed = 0
+            lapse_refused = would_lapse
+        else:
+            lapse_cursor = await conn.execute(_LAPSE_ABSENT_MEMBERS, lapse_params)
+            absent_lapsed = lapse_cursor.rowcount
+            lapse_refused = 0
+
     return PullReport(
         members_upserted=len(present_member_ids),
         bodies_upserted=len(body_ids),
         leader_rows=len(pair_member_ids),
         anomalies=anomalies,
         skipped_st_ids=skipped_st_ids,
+        absent_lapsed=absent_lapsed,
+        lapse_refused=lapse_refused,
     )

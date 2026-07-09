@@ -61,10 +61,20 @@ async def roster_pull() -> None:
 
     logger.info(
         "roster pull complete: %d members, %d bodies, %d leader rows, "
-        "%d anomalies, %d skipped",
+        "%d anomalies, %d skipped, %d absent members lapsed, %d lapse refused",
         report.members_upserted,
         report.bodies_upserted,
         report.leader_rows,
         len(report.anomalies),
         len(report.skipped_st_ids),
+        report.absent_lapsed,
+        report.lapse_refused,
     )
+
+    if report.lapse_refused > 0:
+        logger.error(
+            "roster pull refused to lapse %d member(s): an implausible mass "
+            "absence, not applied",
+            report.lapse_refused,
+        )
+        raise SystemExit(1)

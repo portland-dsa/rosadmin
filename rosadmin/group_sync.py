@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, TypeAlias, runtime_checkable
 
@@ -31,8 +32,11 @@ from rosadmin.auth import get_credentials
 from rosadmin.google_group import (
     SECURE_SETTINGS,
     SECURITY_LABEL,
+    ExistsBehavior,
     GoogleGroup,
+    GoogleGroupBuilder,
     GroupMemberEntry,
+    _retry_transient,
     build_services,
     list_group_members,
 )
@@ -153,6 +157,99 @@ def group_lister_from_env(env: Mapping[str, str]) -> GroupLister | None:
             f"google lister credentials are not configured: {error}"
         ) from error
     return GoogleGroupLister(creds)
+
+
+@dataclass(frozen=True)
+class ProvisionedGroup:
+    """The settings and labels a provisioner saw on the group it ensured -
+    what the sweep compares against the secure defaults to warn on drift."""
+
+    settings: dict[str, str]
+    labels: dict[str, str]
+
+
+@runtime_checkable
+class GroupProvisioner(Protocol):
+    """Creates or adopts a group by address. `exists` sizes the tripwire before
+    anything is created; `ensure` mints a missing group with secure defaults or
+    adopts an existing one untouched, returning what it found there."""
+
+    async def exists(self, email: Email) -> bool: ...
+
+    async def ensure(self, email: Email, name: str) -> ProvisionedGroup: ...
+
+
+#: The description stamped on every sweep-minted group.
+_PROVISION_DESCRIPTION = (
+    "Managed by rosadmin: membership is reconciled from the records. "
+    "Do not edit membership by hand."
+)
+
+
+class GoogleGroupProvisioner:
+    """The real provisioner, over the `Link` builder. Blocking Google calls run
+    in threads, like every other Google boundary here."""
+
+    def __init__(self, creds: Credentials) -> None:
+        self._creds = creds
+
+    async def exists(self, email: Email) -> bool:
+        def _get() -> bool:
+            admin, _identity, _settings = build_services(self._creds)
+            request = admin.groups().get(groupKey=email)
+            try:
+                _retry_transient(request.execute)
+            except HttpError as error:
+                if error.status_code == 404:
+                    return False
+                raise
+            return True
+
+        return await asyncio.to_thread(_get)
+
+    async def ensure(self, email: Email, name: str) -> ProvisionedGroup:
+        group = await (
+            GoogleGroupBuilder()
+            .email(email)
+            .name(name)
+            .description(_PROVISION_DESCRIPTION)
+            .secure_defaults()
+            .exists_behavior(ExistsBehavior.Link)
+            .build_remote(self._creds)
+        )
+        return ProvisionedGroup(
+            settings=dict(group.settings_group),  # type: ignore[arg-type]
+            labels=dict(group.cloud_identity_group.get("labels", {})),
+        )
+
+
+class RecordingProvisioner:
+    """The `--dry-run` wrapper: real existence reads, recorded (not executed)
+    creates. `ensure` reports the secure defaults it *would* set, so the sweep's
+    divergence check sees no drift for a group it never actually touched."""
+
+    def __init__(self, inner: GroupProvisioner) -> None:
+        self._inner = inner
+        self.ensured: list[tuple[str, str]] = []
+
+    async def exists(self, email: Email) -> bool:
+        return await self._inner.exists(email)
+
+    async def ensure(self, email: Email, name: str) -> ProvisionedGroup:
+        self.ensured.append((email, name))
+        return ProvisionedGroup(
+            settings=dict(SECURE_SETTINGS),  # type: ignore[arg-type]
+            labels=dict(SECURITY_LABEL.get("labels", {})),
+        )
+
+
+def provisioner_from_env(env: Mapping[str, str]) -> GroupProvisioner | None:
+    """The real provisioner, or `None` when `ROSADMIN_GOOGLE_DRY_RUN=1` forbids
+    Google calls entirely - the same availability gate `group_lister_from_env`
+    uses, so provisioning degrades in lockstep with reads."""
+    if env.get("ROSADMIN_GOOGLE_DRY_RUN") == "1":
+        return None
+    return GoogleGroupProvisioner(get_credentials(_subject_from_env(env)))
 
 
 def _skip_gate(

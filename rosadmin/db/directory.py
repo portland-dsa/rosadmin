@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from uuid import UUID
 
+import psycopg
 from psycopg.rows import class_row
 from psycopg_pool import AsyncConnectionPool
 
@@ -70,9 +71,11 @@ class GateRow:
 
 @dataclass(frozen=True)
 class BodyLinkRow:
-    """A body's Google linkage: both group addresses, or neither (`linked_pair`)."""
+    """A body's identity and its Google linkage: both addresses, or neither."""
 
     id: UUID
+    name: str
+    body_type: str
     leader_google_group_email: str | None
     member_google_group_email: str | None
 
@@ -123,10 +126,29 @@ _GATE_LOOKUP = """
 """
 
 _BODY_LINK = """
-    SELECT id, leader_google_group_email, member_google_group_email
+    SELECT id, name, body_type, leader_google_group_email, member_google_group_email
     FROM leadership_bodies
     WHERE id = %s
 """
+
+_ALL_BODIES = """
+    SELECT id, name, body_type, leader_google_group_email, member_google_group_email
+    FROM leadership_bodies
+    ORDER BY body_type, name
+"""
+
+_UPDATE_LINK = """
+    UPDATE leadership_bodies
+    SET leader_google_group_email = %(leader)s, member_google_group_email = %(member)s
+    WHERE id = %(body_id)s
+"""
+
+_READ_BOOTSTRAP = "SELECT bootstrapped_group_provisioning FROM bootstrap_state"
+_SET_BOOTSTRAP = "UPDATE bootstrap_state SET bootstrapped_group_provisioning = true"
+
+
+class LinkTaken(Exception):
+    """An address is already linked to a different body; linking was refused."""
 
 
 async def member_by_discord(
@@ -185,3 +207,46 @@ async def body_link(pool: AsyncConnectionPool, body_id: UUID) -> BodyLinkRow | N
     ):
         await cur.execute(_BODY_LINK, (body_id,))
         return await cur.fetchone()
+
+
+async def all_bodies(pool: AsyncConnectionPool) -> list[BodyLinkRow]:
+    async with (
+        pool.connection() as conn,
+        conn.cursor(row_factory=class_row(BodyLinkRow)) as cur,
+    ):
+        await cur.execute(_ALL_BODIES)
+        return await cur.fetchall()
+
+
+async def set_body_link(
+    pool: AsyncConnectionPool,
+    body_id: UUID,
+    leader_email: str | None,
+    member_email: str | None,
+) -> bool:
+    """Link (or unlink) a body's two group addresses. Returns whether a row
+    matched. Raises `LinkTaken` when an address already backs another body -
+    the `UNIQUE` constraints make a double-link unrepresentable, and this turns
+    the violation into a typed error the caller can name."""
+    try:
+        async with pool.connection() as conn:
+            cursor = await conn.execute(
+                _UPDATE_LINK,
+                {"leader": leader_email, "member": member_email, "body_id": body_id},
+            )
+            return cursor.rowcount > 0
+    except psycopg.errors.UniqueViolation as clash:
+        raise LinkTaken(str(clash)) from clash
+
+
+async def is_group_provisioning_bootstrapped(pool: AsyncConnectionPool) -> bool:
+    async with pool.connection() as conn:
+        cursor = await conn.execute(_READ_BOOTSTRAP)
+        row = await cursor.fetchone()
+        assert row is not None  # the migration seeds exactly one row
+        return row[0]
+
+
+async def mark_group_provisioning_bootstrapped(pool: AsyncConnectionPool) -> None:
+    async with pool.connection() as conn:
+        await conn.execute(_SET_BOOTSTRAP)

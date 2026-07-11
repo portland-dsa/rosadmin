@@ -15,7 +15,12 @@ import os
 import pytest
 
 from rosadmin.auth import get_credentials
-from rosadmin.google_group import GoogleGroup, GoogleGroupBuilder, _poll_until
+from rosadmin.google_group import (
+    ExistsBehavior,
+    GoogleGroup,
+    GoogleGroupBuilder,
+    _poll_until,
+)
 
 TEST_GROUP_EMAIL = "i-made-a-test-group@pdx-dsa.org"
 TEST_GROUP_NAME = "A stupid Script Test Group"
@@ -42,7 +47,7 @@ async def test_group_lifecycle_against_real_workspace() -> None:
         .name(TEST_GROUP_NAME)
         .description(TEST_GROUP_DESCRIPTION)
         .secure_defaults()
-        .replace_if_exists()
+        .exists_behavior(ExistsBehavior.Replace)
         .build_remote(creds)
     )
 

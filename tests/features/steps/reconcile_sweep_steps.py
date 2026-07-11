@@ -14,10 +14,21 @@ from behave import given, then, when
 
 from rosadmin.db import make_pool
 from rosadmin.db.audit import RecordingAuditSink
-from rosadmin.google_group import GroupMemberEntry, GroupsPermissionLevel
-from rosadmin.group_sync import RecordingGroupSync, SyncOutcome, _skip_gate
+from rosadmin.google_group import (
+    SECURE_SETTINGS,
+    SECURITY_LABEL,
+    GroupMemberEntry,
+    GroupsPermissionLevel,
+)
+from rosadmin.group_sync import (
+    ProvisionedGroup,
+    RecordingGroupSync,
+    RecordingProvisioner,
+    SyncOutcome,
+    _skip_gate,
+)
 from rosadmin.membership.source import Email
-from rosadmin.reconcile import run_sweep
+from rosadmin.reconcile import ProvisionConfig, run_sweep
 
 
 class FakeWorkspace:
@@ -31,6 +42,20 @@ class FakeWorkspace:
 
     def __init__(self) -> None:
         self.groups: dict[str, dict[str, GroupMemberEntry]] = {}
+        self.settings: dict[str, dict[str, str]] = {}
+        self.labels: dict[str, dict[str, str]] = {}
+
+    async def exists(self, email: Email) -> bool:
+        return email in self.groups
+
+    async def ensure(self, email: Email, name: str) -> ProvisionedGroup:
+        if email not in self.groups:
+            self.groups[email] = {}
+            self.settings[email] = {k: str(v) for k, v in SECURE_SETTINGS.items()}
+            self.labels[email] = dict(SECURITY_LABEL.get("labels", {}))
+        return ProvisionedGroup(
+            settings=self.settings[email], labels=self.labels[email]
+        )
 
     def seed(
         self,
@@ -245,3 +270,167 @@ def step_still_holds_seeded(context, group, count):
 @then("the sweep run reports failure")
 def step_reports_failure(context):
     assert context.report.has_failures
+
+
+@given('an unlinked body "{name}" of type "{body_type}"')
+def step_unlinked_body(context, name, body_type):
+    _ensure_context(context)
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        cursor = conn.execute(
+            "INSERT INTO leadership_bodies (name, body_type) VALUES (%s, %s) RETURNING id",
+            (name, body_type),
+        )
+        row = cursor.fetchone()
+    assert row is not None
+    context.body_ids[name] = row[0]
+
+
+@given('{count:d} unlinked bodies of type "{body_type}"')
+def step_many_unlinked_bodies(context, count, body_type):
+    _ensure_context(context)
+    for i in range(count):
+        with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+            conn.execute(
+                "INSERT INTO leadership_bodies (name, body_type) VALUES (%s, %s)",
+                (f"Body {i}", body_type),
+            )
+
+
+@given("provisioning has already bootstrapped")
+def step_already_bootstrapped(context):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE bootstrap_state SET bootstrapped_group_provisioning = true"
+        )
+
+
+@given("the mass-creation tripwire is {cap:d}")
+def step_tripwire(context, cap):
+    context.tripwire = cap
+
+
+@given('the group "{email:S}" already exists with slack settings')
+def step_preexisting_slack(context, email):
+    _ensure_context(context)
+    context.workspace.groups[email] = {}
+    context.workspace.settings[email] = {"whoCanJoin": "ALL_IN_DOMAIN_CAN_JOIN"}
+    context.workspace.labels[email] = {}
+
+
+@when("the sweep runs with provisioning")
+def step_sweep_with_provisioning(context):
+    _ensure_context(context)
+    config = ProvisionConfig(
+        domain="example.net",
+        main_group_name="Everyone",
+        mass_creation_tripwire=getattr(context, "tripwire", 10),
+    )
+    context.audit = RecordingAuditSink()
+
+    async def _go():
+        pool = make_pool(context.db.app_dsn)
+        await pool.open()
+        try:
+            context.report = await run_sweep(
+                pool,
+                source=None,
+                lister=context.workspace,
+                sync=context.workspace,
+                audit=context.audit,
+                main_group_email=Email(context.main_group),
+                provisioner=context.workspace,
+                provision=config,
+            )
+        finally:
+            await pool.close()
+
+    asyncio.run(_go())
+
+
+@when("the sweep runs with provisioning in dry-run mode")
+def step_sweep_with_provisioning_dry(context):
+    _ensure_context(context)
+    config = ProvisionConfig(
+        domain="example.net",
+        main_group_name="Everyone",
+        mass_creation_tripwire=getattr(context, "tripwire", 10),
+    )
+    context.audit = RecordingAuditSink()
+    # The real dry-run provisioner: real existence reads, recorded (not executed)
+    # creates. The DB must be untouched regardless of what it records.
+    provisioner = RecordingProvisioner(context.workspace)
+
+    async def _go():
+        pool = make_pool(context.db.app_dsn)
+        await pool.open()
+        try:
+            context.report = await run_sweep(
+                pool,
+                source=None,
+                lister=context.workspace,
+                sync=context.workspace,
+                audit=context.audit,
+                main_group_email=Email(context.main_group),
+                provisioner=provisioner,
+                provision=config,
+                dry_run=True,
+            )
+        finally:
+            await pool.close()
+
+    asyncio.run(_go())
+
+
+@then('the group "{email:S}" exists')
+def step_group_exists(context, email):
+    assert email in context.workspace.groups
+
+
+@then('the body "{name}" is still unlinked')
+def step_body_still_unlinked(context, name):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        cursor = conn.execute(
+            "SELECT leader_google_group_email, member_google_group_email "
+            "FROM leadership_bodies WHERE name = %s",
+            (name,),
+        )
+        row = cursor.fetchone()
+    assert row is not None
+    assert row[0] is None and row[1] is None
+
+
+@then("the group-provisioning bootstrap marker is still unset")
+def step_bootstrap_still_unset(context):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        cursor = conn.execute(
+            "SELECT bootstrapped_group_provisioning FROM bootstrap_state"
+        )
+        row = cursor.fetchone()
+    assert row is not None
+    assert row[0] is False
+
+
+@then('the body "{name}" is linked to that leaders group')
+def step_body_linked(context, name):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        cursor = conn.execute(
+            "SELECT leader_google_group_email FROM leadership_bodies WHERE name = %s",
+            (name,),
+        )
+        row = cursor.fetchone()
+    assert row is not None and row[0] is not None
+
+
+@then("the provisioning report created {count:d} groups on the last run")
+def step_report_created(context, count):
+    assert context.report.provision.created == count
+
+
+@then("the provisioning report warned of divergence")
+def step_report_diverged(context):
+    assert context.report.provision.diverged > 0
+
+
+@then("the provisioning report refused the creation")
+def step_report_refused(context):
+    assert context.report.provision.refused_over_cap > 0

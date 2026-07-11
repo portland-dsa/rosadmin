@@ -25,13 +25,8 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from rosadmin.commands.roster import run_pull
+from rosadmin.db.directory import LinkTaken, set_body_link
 from rosadmin.membership.solidarity_tech.client import SolidarityTechClient
-
-_UPDATE_LINK = """
-    UPDATE leadership_bodies
-    SET leader_google_group_email = %(leader)s, member_google_group_email = %(member)s
-    WHERE id = %(body_id)s
-"""
 
 #: The mock's `/_control` routes the persona relay forwards to, one per admin route.
 _RELAY_TARGETS: dict[str, tuple[str, str]] = {
@@ -63,11 +58,19 @@ def create_admin_app(
     async def link(body_id: UUID, body: _Link) -> None:
         if not body.leader_email or not body.member_email:
             raise HTTPException(400, "both leader_email and member_email are required")
-        await _set_link(pool, body_id, body.leader_email, body.member_email)
+        try:
+            matched = await set_body_link(
+                pool, body_id, body.leader_email, body.member_email
+            )
+        except LinkTaken as taken:
+            raise HTTPException(409, str(taken)) from taken
+        if not matched:
+            raise HTTPException(404, "unknown leadership body")
 
     @app.delete("/admin/bodies/{body_id}/link", status_code=204)
     async def unlink(body_id: UUID) -> None:
-        await _set_link(pool, body_id, None, None)
+        if not await set_body_link(pool, body_id, None, None):
+            raise HTTPException(404, "unknown leadership body")
 
     @app.post("/admin/roster/pull")
     async def pull() -> dict[str, object]:
@@ -90,17 +93,6 @@ def create_admin_app(
         _mount_persona_relay(app, mock_control_base)
 
     return app
-
-
-async def _set_link(
-    pool: AsyncConnectionPool, body_id: UUID, leader: str | None, member: str | None
-) -> None:
-    async with pool.connection() as conn:
-        cursor = await conn.execute(
-            _UPDATE_LINK, {"leader": leader, "member": member, "body_id": body_id}
-        )
-        if cursor.rowcount == 0:
-            raise HTTPException(404, "unknown leadership body")
 
 
 def _mount_persona_relay(app: FastAPI, base: str) -> None:

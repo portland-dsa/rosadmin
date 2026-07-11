@@ -118,6 +118,10 @@ def _ensure_docker_host() -> None:
 
 _TRUNCATE_ALL = "TRUNCATE " + ", ".join(_TABLES) + " RESTART IDENTITY CASCADE"
 
+#: `bootstrap_state` is a fixed single row, not a domain table: TRUNCATE would
+#: leave it empty rather than reset it, so a plain UPDATE restores the default.
+_RESET_BOOTSTRAP = "UPDATE bootstrap_state SET bootstrapped_group_provisioning = false"
+
 
 @dataclass
 class Rig:
@@ -136,12 +140,16 @@ class Rig:
     _maintenance: psycopg.Connection[Any]
 
     def truncate(self) -> None:
-        """Empty every domain table, restarting identities, between tests."""
+        """Empty every domain table and reset the bootstrap marker between tests."""
         try:
-            self._maintenance.execute(_TRUNCATE_ALL)
+            self._reset()
         except psycopg.OperationalError:
             self._maintenance = _connect(self.db.superuser_dsn)
-            self._maintenance.execute(_TRUNCATE_ALL)
+            self._reset()
+
+    def _reset(self) -> None:
+        self._maintenance.execute(_TRUNCATE_ALL)
+        self._maintenance.execute(_RESET_BOOTSTRAP)
 
     def stop(self) -> None:
         try:

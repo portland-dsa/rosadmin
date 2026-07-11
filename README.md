@@ -55,7 +55,7 @@ After you set that environment variable, run:
 uv run pytest -m credentials
 ```
 
-With luck, this will create a group for you, add a member, list it back, remove the member, verify the settings and labels, then delete the group in a `finally` - the full live arc against your real Workspace tenant, gated behind the `credentials` marker so it never runs by accident. It uses `replace_if_exists`, so a group left behind by a crashed prior run (say you forgot to enable the Cloud Identity API) doesn't block a retry.
+With luck, this will create a group for you, add a member, list it back, remove the member, verify the settings and labels, then delete the group in a `finally` - the full live arc against your real Workspace tenant, gated behind the `credentials` marker so it never runs by accident. It uses `exists_behavior(ExistsBehavior.Replace)`, so a group left behind by a crashed prior run (say you forgot to enable the Cloud Identity API) doesn't block a retry.
 
 ## Setting up the **Dev** Environment
 
@@ -113,6 +113,13 @@ SOLIDARITY_TECH_MOCK=1
 - `ROSADMIN_GOOGLE_DRY_RUN=1` is what lets the service boot without Google Workspace credentials: the Google mirror deliberately refuses to start half-configured, so with no dry-run flag you must supply `ROSADMIN_GOOGLE_SUBJECT` plus a service-account key. For local development you almost always want dry-run, which logs what it would have done instead of calling Google.
 - `SOLIDARITY_TECH_BASE_URL` and `SOLIDARITY_TECH_MOCK` runs the *mock* Solidarity Tech server so you can test against mocked records. See the [Admin Socket](#admin-socket) section for actual details (including info on the `SOLIDARITY_TECH_MOCK_PERSONAS` line)
 - `ROSADMIN_EXPECT_EXAMPLE_EMAILS` - treats `@example.com` as emails real emails that refuse to send to Google. In terms of the program functioning, this is technically redundant with `ROSADMIN_GOOGLE_DRY_RUN` set, but it's good too have anyway.
+
+The reconcile sweep also self-provisions each leadership body's two Google Groups, which needs a few more values:
+
+- `ROSADMIN_MAIN_GROUP_EMAIL` - the address of the org-wide group every good-standing member syncs into.
+- `ROSADMIN_GROUP_EMAIL_DOMAIN` - the domain every group address the sweep mints takes (e.g. `portlanddsa.org`).
+- `ROSADMIN_MAIN_GROUP_NAME` - the display name for the org-wide main group (its address is `ROSADMIN_MAIN_GROUP_EMAIL`).
+- `ROSADMIN_MASS_CREATION_TRIPWIRE` - a cap on how many new groups one armed sweep may create (default `10`). The very first sweep ignores it to seed every group; after that, a run that would create more than the cap creates nothing and reports failure, so a truncated records pull cannot trigger a mass creation.
 
 Now you can launch `rosadmin`:
 ```zsh

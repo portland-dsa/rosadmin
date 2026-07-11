@@ -21,10 +21,36 @@ from psycopg_pool import AsyncConnectionPool
 from googleapiclient.errors import HttpError
 
 from rosadmin.db.audit import AuditSink, record_best_effort
+from rosadmin.db.directory import (
+    BodyLinkRow,
+    LinkTaken,
+    all_bodies,
+    is_group_provisioning_bootstrapped,
+    mark_group_provisioning_bootstrapped,
+    set_body_link,
+)
 from rosadmin.db.reconcile import desired_audiences, desired_for_group
 from rosadmin.db.roster import PullReport, pull_roster
-from rosadmin.google_group import GroupMemberEntry, GroupsPermissionLevel
-from rosadmin.group_sync import GroupLister, GroupSync, SyncOutcome
+from rosadmin.google_group import (
+    SECURE_SETTINGS,
+    SECURITY_LABEL,
+    GroupMemberEntry,
+    GroupsPermissionLevel,
+    PropagationTimeout,
+)
+from rosadmin.group_naming import (
+    GoogleGroupEmail,
+    GoogleGroupName,
+    GroupKind,
+    GroupNameTooLong,
+)
+from rosadmin.group_sync import (
+    GroupLister,
+    GroupProvisioner,
+    GroupSync,
+    ProvisionedGroup,
+    SyncOutcome,
+)
 from rosadmin.membership.source import Email, MembershipSource
 
 logger = logging.getLogger(__name__)
@@ -110,6 +136,225 @@ def plan_group(
     )
 
 
+@dataclass(frozen=True)
+class ProvisionConfig:
+    """What provisioning needs beyond the pool: the email domain, the main
+    group's display name (its address is `main_group_email`), and the armed-run
+    creation cap."""
+
+    domain: str
+    main_group_name: str
+    mass_creation_tripwire: int
+
+
+@dataclass(frozen=True)
+class ProvisionReport:
+    """One run's provisioning slice - counts only, never addresses."""
+
+    created: int
+    adopted: int
+    already_linked: int
+    diverged: int
+    refused_over_cap: int
+    failed: int
+
+    @property
+    def has_failures(self) -> bool:
+        return self.failed > 0 or self.refused_over_cap > 0
+
+
+@dataclass(frozen=True)
+class _PlannedGroup:
+    """One group the plan wants to exist: its address, display name, and - for a
+    body group - the body and column to link once it resolves."""
+
+    email: Email
+    name: str
+    body_id: UUID | None  # None for the main group, which links nothing
+    kind: GroupKind | None
+
+
+def _plan_body(body: BodyLinkRow, config: ProvisionConfig) -> list[_PlannedGroup]:
+    """A body's leaders and editors group, named by the pure rules. Raises
+    `GroupNameTooLong` when the body cannot be named within Google's caps - the
+    caller catches it so one un-nameable body fails alone rather than aborting
+    the run."""
+    planned: list[_PlannedGroup] = []
+    for kind in (GroupKind.Leaders, GroupKind.Editors):
+        email = Email(
+            str(GoogleGroupEmail(body.name, body.body_type, kind, config.domain))
+        )
+        name = str(GoogleGroupName(body.name, body.body_type, kind))
+        planned.append(
+            _PlannedGroup(email=email, name=name, body_id=body.id, kind=kind)
+        )
+    return planned
+
+
+def _is_linked(body: BodyLinkRow) -> bool:
+    """A body is already linked once both address columns are set. Keying the
+    skip on the stored columns (not on whether today's naming reproduces them)
+    means a renamed or hand-linked body keeps its existing groups instead of
+    being re-minted and silently repointed."""
+    return (
+        body.leader_google_group_email is not None
+        and body.member_google_group_email is not None
+    )
+
+
+def _plan_pending(
+    bodies: list[BodyLinkRow], config: ProvisionConfig, main_email: Email
+) -> tuple[list[_PlannedGroup], int]:
+    """The groups a run must ensure, and how many bodies it could not name.
+
+    The main group is always ensured. A body linked on both columns is already
+    done and contributes nothing. A body that overflows a Google cap is counted
+    in the second return value and skipped, so one un-nameable body never aborts
+    the whole run.
+    """
+    pending = [
+        _PlannedGroup(
+            email=main_email, name=config.main_group_name, body_id=None, kind=None
+        )
+    ]
+    name_failures = 0
+    for body in bodies:
+        if _is_linked(body):
+            continue
+        try:
+            pending.extend(_plan_body(body, config))
+        except GroupNameTooLong as error:
+            logger.error("cannot name groups for body %s: %s", body.id, error)
+            name_failures += 1
+    return pending, name_failures
+
+
+def _diverged(seen: ProvisionedGroup) -> bool:
+    """True when an adopted group's settings or labels differ from the secure
+    defaults - the sweep warns, never rewrites."""
+    settings_ok = all(seen.settings.get(k) == v for k, v in SECURE_SETTINGS.items())
+    labels_ok = seen.labels == SECURITY_LABEL.get("labels", {})
+    return not (settings_ok and labels_ok)
+
+
+def _tripwire_refuses(bootstrapped: bool, creations: int, cap: int) -> bool:
+    """Whether an armed run must refuse this batch of creations.
+
+    The first (not-yet-bootstrapped) run mints freely however large - it is the
+    seeding run the cap is armed after. Once bootstrapped, a batch larger than
+    the cap is a poisoned plan (a truncated `all_bodies`, a mock wired live) and
+    is refused wholesale rather than obediently created.
+    """
+    return bootstrapped and creations > cap
+
+
+async def _provision(
+    pool: AsyncConnectionPool,
+    provisioner: GroupProvisioner,
+    config: ProvisionConfig,
+    main_email: Email,
+    *,
+    dry_run: bool,
+) -> ProvisionReport:
+    """Ensure every body's groups and the main group exist and are linked.
+
+    The bootstrap marker waives the cap for the first run and arms it after; an
+    armed run that would create more than the cap creates nothing and fails. A
+    dry run does the real existence reads and the recorded `ensure` calls but
+    writes nothing to the database - no link, no bootstrap marker - so a
+    rehearsal cannot arm state a later real run would then skip.
+    """
+    bodies = await all_bodies(pool)
+    already_linked = sum(1 for body in bodies if _is_linked(body))
+    pending, failed = _plan_pending(bodies, config, main_email)
+
+    # Size the tripwire: how many pending groups do not yet exist remotely.
+    to_create = [g for g in pending if not await provisioner.exists(g.email)]
+    bootstrapped = await is_group_provisioning_bootstrapped(pool)
+    if _tripwire_refuses(bootstrapped, len(to_create), config.mass_creation_tripwire):
+        logger.error(
+            "mass-creation tripwire: %d new groups exceed the cap of %d; creating "
+            "none this run",
+            len(to_create),
+            config.mass_creation_tripwire,
+        )
+        return ProvisionReport(
+            created=0,
+            adopted=0,
+            already_linked=already_linked,
+            diverged=0,
+            refused_over_cap=len(to_create),
+            failed=failed,
+        )
+
+    creating = {g.email for g in to_create}
+    created = adopted = diverged = 0
+    body_links: dict[UUID, dict[GroupKind, Email]] = {}
+    for group in pending:
+        try:
+            seen = await provisioner.ensure(group.email, group.name)
+        except (HttpError, PropagationTimeout) as error:
+            logger.error("provisioning %s failed: %s", group.email, error)
+            failed += 1
+            continue
+        if group.email in creating:
+            created += 1
+        else:
+            adopted += 1
+            if _diverged(seen):
+                diverged += 1
+                logger.warning(
+                    "adopted %s has settings that diverge from the secure defaults",
+                    group.email,
+                )
+        if group.body_id is not None and group.kind is not None:
+            body_links.setdefault(group.body_id, {})[group.kind] = group.email
+
+    failed = await _link_bodies(pool, body_links, failed, dry_run=dry_run)
+
+    if not bootstrapped and created > 0:
+        if dry_run:
+            logger.info("would arm the group-provisioning bootstrap marker")
+        else:
+            await mark_group_provisioning_bootstrapped(pool)
+    return ProvisionReport(
+        created=created,
+        adopted=adopted,
+        already_linked=already_linked,
+        diverged=diverged,
+        refused_over_cap=0,
+        failed=failed,
+    )
+
+
+async def _link_bodies(
+    pool: AsyncConnectionPool,
+    body_links: dict[UUID, dict[GroupKind, Email]],
+    failed: int,
+    *,
+    dry_run: bool,
+) -> int:
+    """Write each newly provisioned body's two resolved addresses. A `LinkTaken`
+    clash is a per-body failure, never a silent repoint; a body missing one
+    provisioned side stays unlinked and counts as failed. A dry run logs the link
+    it would write and touches nothing."""
+    for body_id, links in body_links.items():
+        if GroupKind.Leaders not in links or GroupKind.Editors not in links:
+            failed += 1  # one side failed to provision; leave the body unlinked
+            continue
+        if dry_run:
+            logger.info("would link body %s", body_id)
+            continue
+        try:
+            await set_body_link(
+                pool, body_id, links[GroupKind.Leaders], links[GroupKind.Editors]
+            )
+        except LinkTaken as taken:
+            logger.error("refusing to link body %s: %s", body_id, taken)
+            failed += 1
+    return failed
+
+
 #: Serializes sweep runs and nothing else. Session-level, not
 #: transaction-level: the Google apply phase runs outside any transaction,
 #: so the lock must outlive them all; a killed process releases it with its
@@ -155,10 +400,14 @@ class SweepReport:
     #: False when the environment forbade Google reads entirely - the run
     #: reported desired state and applied nothing.
     lister_available: bool
+    provision: ProvisionReport | None = None
 
     @property
     def has_failures(self) -> bool:
-        return any(g.failed > 0 or g.refused > 0 for g in self.groups)
+        provision_failed = self.provision is not None and self.provision.has_failures
+        return provision_failed or any(
+            g.failed > 0 or g.refused > 0 for g in self.groups
+        )
 
 
 async def run_sweep(
@@ -169,7 +418,10 @@ async def run_sweep(
     sync: GroupSync,
     audit: AuditSink,
     main_group_email: Email,
+    provisioner: GroupProvisioner | None = None,
+    provision: ProvisionConfig | None = None,
     allow_mass_removal: bool = False,
+    dry_run: bool = False,
 ) -> SweepReport:
     """One full reconcile run. See the module docstring for the shape.
 
@@ -205,7 +457,10 @@ async def run_sweep(
             sync=sync,
             audit=audit,
             main_group_email=main_group_email,
+            provisioner=provisioner,
+            provision=provision,
             allow_mass_removal=allow_mass_removal,
+            dry_run=dry_run,
         )
     finally:
         await lock_conn.close()
@@ -219,7 +474,10 @@ async def _sweep_locked(
     sync: GroupSync,
     audit: AuditSink,
     main_group_email: Email,
+    provisioner: GroupProvisioner | None,
+    provision: ProvisionConfig | None,
     allow_mass_removal: bool,
+    dry_run: bool,
 ) -> SweepReport:
     pull: PullReport | None = None
     if source is not None:
@@ -227,6 +485,17 @@ async def _sweep_locked(
         pull = await pull_roster(pool, members)
         if pull.lapse_refused > 0:
             raise RosterPullUnsafe(pull.lapse_refused)
+    provision_report: ProvisionReport | None = None
+    if provisioner is not None and provision is not None:
+        provision_report = await _provision(
+            pool, provisioner, provision, main_group_email, dry_run=dry_run
+        )
+    elif provision is not None:
+        # Google reads/writes are off (the env dry-run toggle): name what we
+        # would mint, touch nothing.
+        pending, _ = _plan_pending(await all_bodies(pool), provision, main_group_email)
+        for group in pending:
+            logger.info("would provision %s (%s)", group.email, group.name)
     audiences = await desired_audiences(pool, main_group_email)
     if lister is None:
         logger.warning(
@@ -234,7 +503,12 @@ async def _sweep_locked(
         )
         for group_email, desired in sorted(audiences.items()):
             logger.info("desired state for %s: %d members", group_email, len(desired))
-        return SweepReport(pull=pull, groups=(), lister_available=False)
+        return SweepReport(
+            pull=pull,
+            groups=(),
+            lister_available=False,
+            provision=provision_report,
+        )
     outcomes: list[GroupOutcome] = []
     for group_email, desired in sorted(audiences.items()):
         try:
@@ -273,7 +547,12 @@ async def _sweep_locked(
             fresh = await desired_for_group(pool, group_email, main_group_email)
             plan = _recheck(plan, fresh)
         outcomes.append(await _apply(plan, sync=sync, audit=audit))
-    return SweepReport(pull=pull, groups=tuple(outcomes), lister_available=True)
+    return SweepReport(
+        pull=pull,
+        groups=tuple(outcomes),
+        lister_available=True,
+        provision=provision_report,
+    )
 
 
 def _recheck(plan: GroupPlan, fresh: dict[str, UUID]) -> GroupPlan:

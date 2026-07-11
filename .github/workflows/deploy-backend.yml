@@ -1,8 +1,14 @@
-# Build the relocatable artifact once on merge to main, then deploy it to staging.
-# CI holds no runtime credentials; it reaches the box only as a short-lived tagged
-# ephemeral Tailscale node, talking to the shell-less deploy-rosadmin-staging user
-# whose login identity is itself the staging boundary. There is no production job
-# yet - production is added after staging is well exercised.
+# Build the relocatable artifact on merge to main and deploy it. CI holds no
+# runtime credentials; it reaches the box only as a short-lived tagged ephemeral
+# Tailscale node, talking to a shell-less per-environment deploy user whose login
+# identity is itself the boundary (deploy-rosadmin-staging, deploy-rosadmin-production).
+#
+# Staging deploys unattended. Production is gated: the deploy-production job binds
+# the `production` GitHub environment, whose required-reviewers rule pauses every
+# run for a human click before it touches real member records. Production builds a
+# distinct flavor (no ./admintools - the operator admin surface is absent there)
+# and, being sweep-only for now, has no web service to restart or poll: the box-side
+# `activate` verifies the tree against its manifest and its exit status is the gate.
 name: deploy-backend
 on:
     push:
@@ -75,3 +81,60 @@ jobs:
                     sleep 5
                   done
                   echo "staging did not become active" >&2; exit 1
+
+    # The production artifact omits ./admintools, so the operator admin surface is
+    # absent by packaging - the same guarantee as devtools/fake-login. Distinct
+    # artifact name so deploy-production can never pick up the staging flavor.
+    build-production:
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/checkout@v6
+            - name: Install uv
+              uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+              with:
+                  version: "0.11.16"
+            - name: Build relocatable artifact (production flavor)
+              run: bash scripts/build_artifact.sh
+            - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              with:
+                  name: rosadmin-production-${{ github.sha }}
+                  path: dist/rosadmin-${{ github.sha }}.tar.gz
+                  if-no-files-found: error
+
+    deploy-production:
+        needs: build-production
+        # The `production` environment's required-reviewers rule pauses this run for
+        # a human approval before anything reaches real member records. It also holds
+        # its own DEPLOY_HOST (deploy-rosadmin-production@<box>), DEPLOY_SSH_KEY, and
+        # TS_OAUTH_* - never shared with staging's.
+        environment: production
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/download-artifact@v4
+              with:
+                  name: rosadmin-production-${{ github.sha }}
+                  path: ./artifact
+            - uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
+              with:
+                  oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+                  oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+                  tags: tag:ci-deploy
+            - name: ship + activate
+              env:
+                  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}       # deploy-rosadmin-production@<box-tailscale-name>
+                  DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }} # private key; pubkey is the deploy user's forced-command key
+              run: |
+                  set -euo pipefail
+                  SHA="${{ github.sha }}"
+                  install -d -m 700 ~/.ssh
+                  printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+                  chmod 600 ~/.ssh/deploy_key
+                  ssh=(ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new)
+                  TAR="artifact/rosadmin-$SHA.tar.gz"
+                  DIGEST="$(sha256sum "$TAR" | cut -d' ' -f1)"
+                  "${ssh[@]}" "$DEPLOY_HOST" "upload $SHA $DIGEST" < "$TAR"
+                  # Sweep-only production has no persistent service to poll: `activate`
+                  # swaps `current` and verifies the tree against its manifest, exiting
+                  # nonzero on any mismatch. That exit IS the deploy gate; the 4-hourly
+                  # timer runs the sweep itself.
+                  "${ssh[@]}" "$DEPLOY_HOST" "activate $SHA"

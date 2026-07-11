@@ -444,6 +444,17 @@ class GoogleGroup:
             groupKey=self.email,
             body={"email": email, "role": level.value},
         )
+        if logger.isEnabledFor(logging.DEBUG):
+            # A universal 412 conditionNotMet on inserts is an If-Match
+            # precondition failure, so name whether the request carried one.
+            # Header names only, never their values (the bearer token) or the
+            # body (the member address).
+            headers = request.headers or {}
+            logger.debug(
+                "member insert headers=%s If-Match=%r",
+                sorted(headers),
+                headers.get("If-Match"),
+            )
         _retry_transient(request.execute)
 
     def _raw_remove_member(self, email: str) -> None:

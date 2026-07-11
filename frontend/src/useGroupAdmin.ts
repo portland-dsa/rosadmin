@@ -259,7 +259,6 @@ export function useGroupAdmin() {
 
   const changeMode = useCallback((next: Mode) => {
     setMode(next)
-    setQuery('')
     if (next === 'filter') dispatch({ type: 'clearAdd' })
   }, [])
 

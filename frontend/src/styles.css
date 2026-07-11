@@ -660,10 +660,16 @@ body {
 /* ---- LoginScreen ----------------------------------------------- */
 .login {
   display: flex;
+  flex-direction: column;
   min-height: 100dvh;
   align-items: center;
   justify-content: center;
   padding: 24px;
+}
+.login__unauth_notice {
+  margin: 14px 0 0;
+  font-size: 24px;
+  color: var(--red-dark);
 }
 .login__card {
   display: flex;

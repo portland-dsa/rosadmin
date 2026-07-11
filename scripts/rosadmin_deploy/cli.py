@@ -33,20 +33,29 @@ from che_deploya.db import Db, Role
 
 
 class ServiceSecrets(StrEnum):
-    """The credentials the service unit loads: the audit HMAC key, the migration
-    role's scram password, the botonio SSO bearer, and the Google DWD key.
+    """The credentials a rosadmin unit loads: the audit HMAC key, the migration
+    role's scram password, the botonio SSO bearer, the Google DWD key, and the
+    Solidarity Tech API token.
 
     Each member's value is the credential name the app reads from
     `$CREDENTIALS_DIRECTORY`, the `<name>.cred` filename, and the key in the
     encrypted secrets file - so these must match `_audit_key`, `_migrate_password`,
     and `sso_bearer` exactly. The DWD key is the raw service-account JSON; the
     unit's `CREDENTIALS_FILE` env points the app at its delivered path.
+
+    Not every unit loads all five: the staging web `service` carries the SSO
+    bearer but no Solidarity Tech token (staging reads the in-process mock, which
+    ignores auth); the production `sync` sweep carries the token but no SSO bearer
+    (it authenticates no users). Each component names the subset it needs.
     """
 
     AuditHmacKey = "audit-hmac-key"
     DbMigrationPassword = "db_migration_password"
     BotonioSsoBearer = "botonio_sso_bearer"
     GoogleDwdKey = "google-dwd-key"
+    #: The real Solidarity Tech bearer token. Production-only: the staging mock
+    #: needs none, so only the production sweep loads it.
+    SolidarityTechToken = "solidarity_tech_token"
 
 
 class ServiceEnv(StrEnum):
@@ -81,12 +90,26 @@ class ServiceEnv(StrEnum):
 ROSADMIN = DeploySpec(
     root="rosadmin",
     package="rosadmin_deploy",
-    stages=frozenset({Stages.Staging}),
+    stages=frozenset(Stages),
     components=[
         Component(
             name="service",
+            # Staging-only: the web service (with its admin socket and mock
+            # Solidarity Tech source) is not on production yet. See the `sync`
+            # component below for the production sweep and the stopgap note there.
+            stages=frozenset({Stages.Staging}),
             secrets=Secret(
-                names=frozenset(ServiceSecrets),
+                # The web service's four: no Solidarity Tech token (staging reads
+                # the mock, which ignores auth), so name the set explicitly rather
+                # than sweeping in every ServiceSecrets member.
+                names=frozenset(
+                    {
+                        ServiceSecrets.AuditHmacKey,
+                        ServiceSecrets.DbMigrationPassword,
+                        ServiceSecrets.BotonioSsoBearer,
+                        ServiceSecrets.GoogleDwdKey,
+                    }
+                ),
                 src="{repo_root}/secrets/rosadmin/{stage}.enc.yaml",
             ),
             units=[
@@ -168,6 +191,92 @@ ROSADMIN = DeploySpec(
             # No restart on purpose: activation restarts the service through
             # the deploy wrapper, and a fresh box has no release to start yet.
             # Unit-file changes are applied by the head cheerleader (admin).
+        ),
+        # STOPGAP (2026-07-10): production runs the reconcile sweep alone - there
+        # is no production web service yet. The sweep is split into its own
+        # component so it can go live on production without dragging the staging
+        # web units, the botonio SSO config, or the staging-only mock env onto the
+        # box. This deliberately duplicates the sync unit files the staging
+        # `service` component also installs; the bytes are identical, so a box
+        # that runs both stages just installs them twice.
+        #
+        # When the production web service lands, fold this back into `service`:
+        # extract the keys both units share (the Google subject, the Solidarity
+        # Tech source, the database name) into a rendered shared.env like staging,
+        # move migration back to the web unit's ExecStartPre, give `service` both
+        # stages, and delete this component. The production sweep runbook has the
+        # activation steps in the meantime.
+        Component(
+            name="sync",
+            stages=frozenset({Stages.Production}),
+            secrets=Secret(
+                # The sweep writes audit rows, mirrors to Google, migrates the
+                # schema (no web service does it here), and reads the real
+                # Solidarity Tech roster. No SSO bearer: it authenticates no users.
+                names=frozenset(
+                    {
+                        ServiceSecrets.AuditHmacKey,
+                        ServiceSecrets.DbMigrationPassword,
+                        ServiceSecrets.GoogleDwdKey,
+                        ServiceSecrets.SolidarityTechToken,
+                    }
+                ),
+                src="{repo_root}/secrets/rosadmin/{stage}.enc.yaml",
+            ),
+            units=[
+                StaticUnit(
+                    src="{repo_root}/deploy/systemd/rosadmin-sync@.service",
+                    dest="/etc/systemd/system/rosadmin-sync@.service",
+                ),
+                StaticUnit(
+                    src="{repo_root}/deploy/systemd/rosadmin-sync@.timer",
+                    dest="/etc/systemd/system/rosadmin-sync@.timer",
+                ),
+                TemplatedUnit(
+                    src="{repo_root}/deploy/systemd/rosadmin-sync@{stage}.service.d/override.conf",
+                    resource_loc="assets/rosadmin-sync@{stage}.service.d/override.conf",
+                    dest="/etc/systemd/system/rosadmin-sync@{stage}.service.d/override.conf",
+                    # Only the org-address values are rendered from the secrets;
+                    # the rest of the override is stage-fixed literals (the domain,
+                    # the database name, the request budget) safe to commit.
+                    env=Environment(
+                        names=frozenset(
+                            {
+                                ServiceEnv.GoogleDwdSubject,
+                                ServiceEnv.MainGroupEmail,
+                                ServiceEnv.MainGroupName,
+                            }
+                        )
+                    ),
+                    per_stage=True,
+                ),
+            ],
+            # The production database on the same 5433 cluster staging shares. The
+            # group role and role/database shapes mirror staging with `{stage}`
+            # rendering to `production`; grants live in the schema migrations the
+            # sweep applies on its first run. Idempotent: the group role already
+            # exists from staging provisioning and is left untouched.
+            db=Db(
+                port=5433,
+                group_role=Role(name="rosadmin_app"),
+                roles=[
+                    Role(
+                        name="rosadmin_{stage}_migrate",
+                        login=True,
+                        password=ServiceSecrets.DbMigrationPassword,
+                    ),
+                    Role(
+                        name="rosadmin_{stage}_app",
+                        login=True,
+                        member_of="rosadmin_app",
+                    ),
+                ],
+                databases=[
+                    db.Database(
+                        name="rosadmin_{stage}", owner="rosadmin_{stage}_migrate"
+                    )
+                ],
+            ),
         ),
     ],
 )

@@ -355,11 +355,24 @@ class GoogleGroupSync:
                     gated,
                 )
                 return SyncOutcome.AlreadyConverged
-            # Only the status code: rendering the HttpError itself would embed
-            # the request URI, which for a remove carries the member address
-            # as a path segment.
+            # Status code plus Google's own machine reason codes - what tells a
+            # quota signal from a bad-address rejection from a real fault. Only
+            # the `reason` field of each detail: never the `message` or the
+            # rendered `HttpError`, which carry the request URI and, for a
+            # remove, the member address as a path segment. `error_details` is a
+            # parsed list for a JSON error body, an empty string otherwise.
+            details = error.error_details
+            reasons = (
+                [d.get("reason") for d in details if isinstance(d, dict)]
+                if isinstance(details, list)
+                else []
+            )
             logger.error(
-                "google sync %s on %s failed: status %s", op, gated, error.status_code
+                "google sync %s on %s failed: status %s reasons %s",
+                op,
+                gated,
+                error.status_code,
+                reasons,
             )
             return SyncOutcome.Failed
         return SyncOutcome.Applied

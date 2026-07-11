@@ -13,12 +13,15 @@ from rosadmin.db.audit import PostgresAuditSink, audit_key_from_env
 from rosadmin.group_sync import (
     DryRunGroupSync,
     GroupSync,
+    RecordingProvisioner,
     group_lister_from_env,
     group_sync_from_env,
+    provisioner_from_env,
 )
 from rosadmin.membership.solidarity_tech.client import SolidarityTechClient
 from rosadmin.membership.source import ANOMALY_WARNING, Email
 from rosadmin.reconcile import (
+    ProvisionConfig,
     RosterPullUnsafe,
     SweepAlreadyRunning,
     SweepReport,
@@ -38,6 +41,24 @@ def _main_group_from_env() -> Email:
             "org-wide group the whole good-standing roster syncs into"
         )
     return Email(raw)
+
+
+def _provision_config_from_env() -> ProvisionConfig:
+    domain = os.environ.get("ROSADMIN_GROUP_EMAIL_DOMAIN")
+    if not domain:
+        raise RuntimeError(
+            "ROSADMIN_GROUP_EMAIL_DOMAIN is required: the domain every minted "
+            "group address takes"
+        )
+    name = os.environ.get("ROSADMIN_MAIN_GROUP_NAME")
+    if not name:
+        raise RuntimeError(
+            "ROSADMIN_MAIN_GROUP_NAME is required: the main group's display name"
+        )
+    cap = int(os.environ.get("ROSADMIN_MASS_CREATION_TRIPWIRE", "10"))
+    return ProvisionConfig(
+        domain=domain, main_group_name=name, mass_creation_tripwire=cap
+    )
 
 
 @sync_app.command(name="run")
@@ -74,6 +95,13 @@ async def sync_run(
         if dry_run
         else group_sync_from_env(os.environ)
     )
+    base_provisioner = provisioner_from_env(os.environ)
+    provisioner = (
+        RecordingProvisioner(base_provisioner)
+        if dry_run and base_provisioner is not None
+        else base_provisioner
+    )
+    provision = _provision_config_from_env()
     pool = make_pool(dsn_from_env(os.environ))
     await pool.open()
     try:
@@ -85,7 +113,10 @@ async def sync_run(
             sync=sync,
             audit=audit,
             main_group_email=main_group,
+            provisioner=provisioner,
+            provision=provision,
             allow_mass_removal=allow_mass_removal,
+            dry_run=dry_run,
         )
     except SweepAlreadyRunning:
         raise SystemExit("another sweep run holds the lock; exiting")
@@ -109,6 +140,18 @@ def _report(report: SweepReport, *, dry_run: bool) -> None:
             report.pull.members_upserted,
             report.pull.absent_lapsed,
             len(report.pull.skipped_st_ids),
+        )
+    if report.provision is not None:
+        p = report.provision
+        logger.info(
+            "provision: %d created, %d adopted, %d already linked, %d diverged, "
+            "%d refused over cap, %d failed",
+            p.created,
+            p.adopted,
+            p.already_linked,
+            p.diverged,
+            p.refused_over_cap,
+            p.failed,
         )
     mode = "dry-run" if dry_run else "applied"
     for g in report.groups:

@@ -68,3 +68,39 @@ Feature: The reconcile sweep converges Google Groups to the records
     And the group "everyone@example.net" still holds 20 seeded members
     And the group "everyone@example.net" contains "kris@example.net"
     And the sweep run reports failure
+
+  Scenario: Ralsei's sweep provisions an unlinked body's groups and populates them
+    Given an unlinked body "Cyber World" of type "Working Group"
+    And a member "ralsei@example.net" in standing "good_standing"
+    And "ralsei@example.net" holds a "leader" row on "Cyber World"
+    When the sweep runs with provisioning
+    Then the group "cyber-world-working-group-leaders@example.net" exists
+    And the body "Cyber World" is linked to that leaders group
+    And the group "cyber-world-working-group-leaders@example.net" contains "ralsei@example.net"
+
+  Scenario: A second provisioning run creates nothing new
+    Given an unlinked body "Cyber World" of type "Working Group"
+    When the sweep runs with provisioning
+    And the sweep runs with provisioning
+    Then the provisioning report created 0 groups on the last run
+
+  Scenario: A dry-run provisioning run writes nothing
+    Given an unlinked body "Cyber World" of type "Working Group"
+    When the sweep runs with provisioning in dry-run mode
+    Then the body "Cyber World" is still unlinked
+    And the group-provisioning bootstrap marker is still unset
+
+  Scenario: Lancer's pre-existing group with slack settings is adopted, not overwritten
+    Given an unlinked body "Card Castle" of type "Committee"
+    And the group "card-castle-committee-leaders@example.net" already exists with slack settings
+    When the sweep runs with provisioning
+    Then the body "Card Castle" is linked to that leaders group
+    And the provisioning report warned of divergence
+
+  Scenario: The tripwire refuses a mass creation once armed
+    Given provisioning has already bootstrapped
+    And 8 unlinked bodies of type "Working Group"
+    And the mass-creation tripwire is 5
+    When the sweep runs with provisioning
+    Then the provisioning report refused the creation
+    And the sweep run reports failure

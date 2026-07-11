@@ -99,6 +99,19 @@ SECURITY_LABEL: CiGroup = {
 }
 
 
+class ExistsBehavior(Enum):
+    """What `GoogleGroupBuilder.build_remote` does when the address is taken.
+
+    `Error` (the default) lets the create's 409 propagate; `Replace` deletes the
+    existing group and creates fresh; `Link` adopts it - fetches the existing
+    group and returns it untouched, configuring nothing.
+    """
+
+    Error = "error"
+    Replace = "replace"
+    Link = "link"
+
+
 class PropagationTimeout(Exception):
     """A Google-side change was accepted but never became visible in time."""
 
@@ -549,7 +562,7 @@ class GoogleGroupBuilder:
             .name("My Group")
             .description("...")
             .secure_defaults()
-            .replace_if_exists()
+            .exists_behavior(ExistsBehavior.Replace)
             .build_remote(creds)
         )
     """
@@ -560,7 +573,7 @@ class GoogleGroupBuilder:
         self._description: Optional[str] = None
         self._settings_group: Optional[SettingsGroup] = None
         self._cloud_identity_group: Optional[CiGroup] = None
-        self._replace_if_exists: bool = False
+        self._exists_behavior: ExistsBehavior = ExistsBehavior.Error
 
     def email(self, email: str) -> GoogleGroupBuilder:
         """Declares the email that will define the Google Group, must be globally unique. Should generally be `@your-domain.org`."""
@@ -596,18 +609,21 @@ class GoogleGroupBuilder:
         self._cloud_identity_group = SECURITY_LABEL
         return self
 
-    def replace_if_exists(self, value: bool = True) -> GoogleGroupBuilder:
-        """If the group already exists, delete it before creating. Useful for crash recovery in dev/test workflows."""
-        self._replace_if_exists = value
+    def exists_behavior(self, behavior: ExistsBehavior) -> GoogleGroupBuilder:
+        """How to treat an address that already resolves to a group: `Error`
+        (the default) raises, `Replace` deletes then recreates, `Link` adopts."""
+        self._exists_behavior = behavior
         return self
 
     async def build_remote(self, creds: Credentials) -> GoogleGroup:
         """Create and configure the remote group, returning a ready `GoogleGroup`.
 
         Asserts that ``email``, ``name``, ``description``, and either
-        ``settings``/``label`` or ``secure_defaults`` have been set. If
-        ``replace_if_exists`` is active, any existing group at the same address
-        is deleted first.
+        ``settings``/``label`` or ``secure_defaults`` have been set.
+        ``exists_behavior`` governs what happens when the address is already
+        taken: `Error` (the default) lets the create's 409 propagate,
+        `Replace` deletes the existing group first, and `Link` adopts the
+        existing group untouched instead of configuring it.
 
         Raises:
             AssertionError: if any required builder fields are missing.
@@ -627,7 +643,7 @@ class GoogleGroupBuilder:
         description = self._description
         settings_group = self._settings_group
         cloud_identity_group = self._cloud_identity_group
-        replace_if_exists = self._replace_if_exists
+        behavior = self._exists_behavior
 
         def _do_build() -> GoogleGroup:
             admin, identity, settings_svc = build_services(creds)
@@ -641,9 +657,17 @@ class GoogleGroupBuilder:
                 identity=identity,
                 settings=settings_svc,
             )
-            if replace_if_exists:
+            if behavior is ExistsBehavior.Replace:
                 group._raw_delete(missing_ok=True)
-            group._raw_create()
+            try:
+                group._raw_create()
+            except HttpError as error:
+                if behavior is ExistsBehavior.Link and error.status_code == 409:
+                    # Adopt: the address is taken; accept the existing group as
+                    # truth and hand it back untouched, configuring nothing.
+                    group._raw_fetch()
+                    return group
+                raise
             group._raw_configure()
             return group
 

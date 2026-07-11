@@ -6,7 +6,9 @@ from typing import Annotated, Mapping
 
 from cyclopts import App, Parameter
 
-logging.basicConfig(level=logging.INFO)
+# Overridable via ROSADMIN_LOG_LEVEL (default INFO) so a run can be raised to
+# DEBUG for diagnostics without a code change.
+logging.basicConfig(level=os.environ.get("ROSADMIN_LOG_LEVEL", "INFO").upper())
 
 from rosadmin.commands.one_shot import one_shot_app
 from rosadmin.commands.roster import roster_app

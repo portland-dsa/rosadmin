@@ -9,10 +9,12 @@ from googleapiclient.errors import HttpError
 
 from rosadmin.google_group import GoogleGroup
 from rosadmin.group_sync import (
+    DEFAULT_WRITE_RATE,
     DryRunGroupSync,
     GoogleGroupSync,
     SyncOutcome,
     _skip_gate,
+    _write_rate_from_env,
     group_sync_from_env,
 )
 from rosadmin.membership.source import Email
@@ -56,6 +58,20 @@ def test_group_sync_from_env_real_path_without_credentials_raises(monkeypatch):
     monkeypatch.delenv("CREDENTIALS_PATH", raising=False)
     with pytest.raises(RuntimeError, match="credentials"):
         group_sync_from_env({"ROSADMIN_GOOGLE_SUBJECT": "leader@example.org"})
+
+
+def test_write_rate_defaults_when_unset():
+    assert _write_rate_from_env({}) == DEFAULT_WRITE_RATE
+
+
+def test_write_rate_parses_a_value():
+    assert _write_rate_from_env({"ROSADMIN_GOOGLE_WRITE_RATE": "5"}) == 5.0
+
+
+@pytest.mark.parametrize("bad", ["nope", "", "0", "-1"])
+def test_write_rate_rejects_non_positive_or_non_numeric(bad):
+    with pytest.raises(RuntimeError, match="ROSADMIN_GOOGLE_WRITE_RATE"):
+        _write_rate_from_env({"ROSADMIN_GOOGLE_WRITE_RATE": bad})
 
 
 def test_example_skip_logs_warning_by_default(caplog):

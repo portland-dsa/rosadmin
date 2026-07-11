@@ -300,12 +300,11 @@ class GoogleGroupSync:
     a full `GoogleGroup` (which would also fetch Groups Settings and Cloud
     Identity) per call either.
 
-    An optional `write_limiter` paces the membership writes. Rapid changes churn
-    a group's ETag faster than Google's replicas settle it, which surfaces as a
-    412 `conditionNotMet` on the `If-Match` precondition; spacing writes keeps
-    the group settled between them. The limit only bites a bulk (bootstrap) run -
-    a lone interactive add passes an idle limiter with no delay - so a single
-    `GoogleGroupSync` can serve both the sweep and a write endpoint unharmed.
+    An optional `write_limiter` paces the membership writes to stay within
+    Google's Directory API write quotas and avoid hammering it during a bulk run.
+    The limit only bites a bulk (bootstrap) run - a lone interactive add passes
+    an idle limiter with no delay - so a single `GoogleGroupSync` can serve both
+    the sweep and a write endpoint unharmed.
     """
 
     def __init__(
@@ -481,12 +480,10 @@ def _subject_from_env(env: Mapping[str, str]) -> str:
 
 
 #: Google membership writes per second the sweep paces itself to by default.
-#: Slow enough that a group's ETag settles between adds - rapid changes churn it
-#: faster than Google's replicas reconcile, surfacing as 412 `conditionNotMet`.
-#: A steady-state sweep touches a handful of members and never feels it; only a
-#: bulk bootstrap does. This is a conservative starting point, not a measured
-#: ceiling - raise `ROSADMIN_GOOGLE_WRITE_RATE` once a run shows headroom (the
-#: transient-retry rides out the occasional 412 either way).
+#: Courtesy pacing to stay within the Directory API's write quotas during a bulk
+#: run; a steady-state sweep touches a handful of members and never feels it.
+#: A conservative starting point, not a measured ceiling - raise
+#: `ROSADMIN_GOOGLE_WRITE_RATE` once a run shows headroom.
 DEFAULT_WRITE_RATE = 2.0
 
 
@@ -519,8 +516,7 @@ def group_sync_from_env(env: Mapping[str, str]) -> GroupSync:
     impersonation subject and Workspace credentials up front: a misconfigured
     box fails fast at boot rather than on the first write. The real sync is
     paced at `ROSADMIN_GOOGLE_WRITE_RATE` writes per second (see
-    `DEFAULT_WRITE_RATE`) so a bulk run does not churn a group past what Google's
-    eventual consistency tolerates.
+    `DEFAULT_WRITE_RATE`) so a bulk run stays within Google's write quotas.
     """
     expect = env.get("ROSADMIN_EXPECT_EXAMPLE_EMAILS") == "1"
     if env.get("ROSADMIN_GOOGLE_DRY_RUN") == "1":

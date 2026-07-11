@@ -142,12 +142,14 @@ def test_retry_transient_waits_out_a_429_then_returns() -> None:
     assert call.calls == 2
 
 
-def test_retry_transient_waits_out_a_412_then_returns() -> None:
-    # 412 is Google's eventual-consistency backpressure on bulk member writes -
-    # ridden out like a 429, not surfaced as a failure on the first blip.
-    call = _FlakyCall([_http_error("412")], result="ok")
-    assert _retry_transient(call) == "ok"
-    assert call.calls == 2
+def test_retry_transient_propagates_a_412_immediately() -> None:
+    # A 412 conditionNotMet is not a transient blip that clears on backoff: when
+    # a group is in the state that draws it, every insert fails and retrying only
+    # stalls each one through the whole backoff. It surfaces at once instead.
+    call = _FlakyCall([_http_error("412")], result="never")
+    with pytest.raises(HttpError):
+        _retry_transient(call)
+    assert call.calls == 1
 
 
 def test_retry_transient_propagates_a_404_immediately() -> None:

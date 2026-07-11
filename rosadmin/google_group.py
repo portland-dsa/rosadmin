@@ -141,20 +141,20 @@ def _is_rate_limited_403(error: HttpError) -> bool:
 
 def _is_transient_http_error(error: BaseException) -> bool:
     """True for an `HttpError` worth retrying on its own: a server-side 5xx,
-    a 429, a 412, or a 403 whose reason is one of the Admin SDK's rate-limit
-    spellings - any of which Google can return for any of the three APIs during
-    an otherwise-healthy operation.
+    a 429, or a 403 whose reason is one of the Admin SDK's rate-limit spellings -
+    any of which Google can return for any of the three APIs during an
+    otherwise-healthy operation and which clear on a backoff.
 
-    The 412 (`Precondition Failed`) is Google's eventual-consistency
-    backpressure: when a group's membership is still settling under rapid
-    writes - a bulk sweep flooding a freshly created group with thousands of
-    inserts - the backend refuses a beat's worth and clears on a short backoff.
-    It is weather like the rest, not a verdict; the steady state of a few
-    incremental adds rarely draws it. Any other exception, including a genuinely
+    A 412 (`Precondition Failed` / `conditionNotMet`) is deliberately NOT here.
+    A healthy member insert never draws one; when a group is in the state that
+    does, every insert to it fails and retrying does not clear it within a run -
+    so the only effect of retrying is to stall each add through the whole backoff
+    before the identical failure surfaces. It propagates immediately instead,
+    failing that add fast and leaving it for the next sweep to re-attempt once
+    the group is healthy again. Any other exception, including a genuinely
     forbidden 403, is a real failure and propagates unwrapped immediately."""
     return isinstance(error, HttpError) and (
         error.status_code == 429
-        or error.status_code == 412
         or error.status_code >= 500
         or _is_rate_limited_403(error)
     )
@@ -201,11 +201,11 @@ _T = TypeVar("_T")
 def _retry_transient(call: Callable[[], _T]) -> _T:
     """Run one blocking API call, waiting out transient failures.
 
-    Quota signals (429, rate-limited 403), server errors (5xx), and the 412
-    eventual-consistency backpressure get exponential backoff with jitter;
-    anything else - a 404, a 409, a real 403 - propagates immediately, because
-    those are verdicts, not weather. Synchronous on purpose: every caller
-    already runs inside ``asyncio.to_thread``.
+    Quota signals (429, rate-limited 403) and server errors (5xx) get
+    exponential backoff with jitter; anything else - a 404, a 409, a 412, a real
+    403 - propagates immediately, because those are verdicts, not weather.
+    Synchronous on purpose: every caller already runs inside
+    ``asyncio.to_thread``.
     """
     retrying = Retrying(
         retry=retry_if_exception(_is_transient_http_error),

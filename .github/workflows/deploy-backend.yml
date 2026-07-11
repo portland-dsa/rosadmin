@@ -102,11 +102,16 @@ jobs:
                   if-no-files-found: error
 
     deploy-production:
-        needs: build-production
+        # Gated on staging deploy success, not standalone: production never ships a
+        # build that staging rejected. This ordering is also a natural brake - prod
+        # cannot even queue for approval until staging is green.
+        needs: [build-production, deploy-staging]
         # The `production` environment's required-reviewers rule pauses this run for
-        # a human approval before anything reaches real member records. It also holds
-        # its own DEPLOY_HOST (deploy-rosadmin-production@<box>), DEPLOY_SSH_KEY, and
-        # TS_OAUTH_* - never shared with staging's.
+        # a human approval before anything reaches the box. It also holds its own
+        # DEPLOY_HOST (deploy-rosadmin-production@<box>), DEPLOY_SSH_KEY, and
+        # TS_OAUTH_* - never shared with staging's. NOTE: required-reviewers is a
+        # repo Settings -> Environments -> production rule, NOT enforceable from this
+        # file; a freshly auto-created environment has NO protection until it is set.
         environment: production
         runs-on: ubuntu-24.04
         steps:

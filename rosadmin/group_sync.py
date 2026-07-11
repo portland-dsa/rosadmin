@@ -392,9 +392,11 @@ class DryRunGroupSync:
         )
         if isinstance(gated, SyncOutcome):
             return gated
-        # The group only - even at dry-run INFO, a member address never
+        # Debug, not info: one line per member drowns a bulk rehearsal in
+        # thousands of identical lines, and the per-group summary already
+        # carries the count. The group only - even here a member address never
         # reaches a log line.
-        logger.info("dry-run: would %s a member on %s", op, gated)
+        logger.debug("dry-run: would %s a member on %s", op, gated)
         return SyncOutcome.SkippedDryRun
 
 

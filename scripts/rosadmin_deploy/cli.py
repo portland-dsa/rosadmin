@@ -72,6 +72,10 @@ class ServiceEnv(StrEnum):
     #: good-standing roster into - an org address, kept out of the committed
     #: template like the subject and personas above.
     MainGroupEmail = "main_group_email"
+    #: The main group's display name. The sweep needs it to name that group when
+    #: it must create one; an existing group is adopted with its name untouched.
+    #: Paired with MainGroupEmail in the secrets file so the two stay together.
+    MainGroupName = "main_group_name"
 
 
 ROSADMIN = DeploySpec(

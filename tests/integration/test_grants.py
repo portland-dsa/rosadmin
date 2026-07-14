@@ -39,6 +39,24 @@ def test_app_role_has_full_access_to_data_tables(database) -> None:
         assert ("ralsei@example.com",) in rows
 
 
+def test_app_role_may_record_an_unmirrorable_address_but_not_erase_it(
+    database,
+) -> None:
+    with psycopg.connect(database.app_dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO unmirrorable_addresses (address, reason) VALUES (%s, %s)",
+            ("spamton@example.com", "no_google_account"),
+        )
+        conn.execute(
+            "UPDATE unmirrorable_addresses SET observed_at = now() WHERE address = %s",
+            ("spamton@example.com",),
+        )
+        rows = conn.execute("SELECT address FROM unmirrorable_addresses").fetchall()
+        assert ("spamton@example.com",) in rows
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("DELETE FROM unmirrorable_addresses")
+
+
 def test_app_role_may_link_a_body_but_not_rename_it(database) -> None:
     with psycopg.connect(database.superuser_dsn, autocommit=True) as conn:
         body_id = one_row(

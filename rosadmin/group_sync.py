@@ -103,7 +103,28 @@ class SyncOutcome(Enum):
     SkippedExampleEmail = "skipped_example_email"
     SkippedDryRun = "skipped_dry_run"
     AlreadyConverged = "already_converged"
+    NoGoogleAccount = "no_google_account"
+    AddressNotFound = "address_not_found"
     Failed = "failed"
+
+
+#: The outcomes that are verdicts about the address rather than about the
+#: attempt: Google answers identically on every future sweep until something
+#: changes on the member's side, so the sweep records the refusal and stops
+#: offering the address. A variant's value is the string stored in the reason
+#: column of `unmirrorable_addresses`, so the two can never drift apart.
+UNMIRRORABLE = frozenset({SyncOutcome.NoGoogleAccount, SyncOutcome.AddressNotFound})
+
+#: The outcomes where nothing was attempted at all - a gate fired, or the run
+#: was a rehearsal. Grouped so a caller tallying a sweep asks the question once
+#: rather than listing the variants it happens to know about.
+SKIPPED = frozenset(
+    {
+        SyncOutcome.SkippedUnlinked,
+        SyncOutcome.SkippedExampleEmail,
+        SyncOutcome.SkippedDryRun,
+    }
+)
 
 
 class GroupSync(Protocol):
@@ -118,10 +139,30 @@ class GroupSync(Protocol):
     ) -> SyncOutcome: ...
 
 
+def _group_exists(admin: DirectoryResource, group_email: Email) -> bool:
+    """Whether Admin Directory still has the group: one `groups().get`.
+
+    Synchronous, like every other blocking Google call here: the callers run it
+    inside `asyncio.to_thread`.
+    """
+    request = admin.groups().get(groupKey=group_email)
+    try:
+        _retry_transient(request.execute)
+    except HttpError as error:
+        if error.status_code == 404:
+            return False
+        raise
+    return True
+
+
 class GroupLister(Protocol):
-    """The read side of the Google boundary: one group's remote member list."""
+    """The read side of the Google boundary: one group's remote member list, and
+    the cheap question of whether the group is there at all.
+    """
 
     async def list(self, group_email: Email) -> list[GroupMemberEntry]: ...
+
+    async def exists(self, group_email: Email) -> bool: ...
 
 
 class GoogleGroupLister:
@@ -131,15 +172,22 @@ class GoogleGroupLister:
     def __init__(self, creds: Credentials) -> None:
         self._creds = creds
 
-    async def list(self, group_email: Email) -> list[GroupMemberEntry]:
-        admin = await asyncio.to_thread(
+    async def _admin(self) -> DirectoryResource:
+        return await asyncio.to_thread(
             discovery.build,
             "admin",
             "directory_v1",
             credentials=self._creds,
             cache_discovery=False,
         )
+
+    async def list(self, group_email: Email) -> list[GroupMemberEntry]:
+        admin = await self._admin()
         return await asyncio.to_thread(list_group_members, admin, group_email)
+
+    async def exists(self, group_email: Email) -> bool:
+        admin = await self._admin()
+        return await asyncio.to_thread(_group_exists, admin, group_email)
 
 
 def group_lister_from_env(env: Mapping[str, str]) -> GroupLister | None:
@@ -174,11 +222,12 @@ class ProvisionedGroup:
 class GroupProvisioner(Protocol):
     """Creates or adopts a group by address. `exists` sizes the tripwire before
     anything is created; `ensure` mints a missing group with secure defaults or
-    adopts an existing one untouched, returning what it found there."""
+    adopts an existing one untouched, returning what it found there.
+    """
 
-    async def exists(self, email: Email) -> bool: ...
+    async def exists(self, group_email: Email) -> bool: ...
 
-    async def ensure(self, email: Email, name: str) -> ProvisionedGroup: ...
+    async def ensure(self, group_email: Email, name: str) -> ProvisionedGroup: ...
 
 
 #: The description stamped on every sweep-minted group.
@@ -195,24 +244,22 @@ class GoogleGroupProvisioner:
     def __init__(self, creds: Credentials) -> None:
         self._creds = creds
 
-    async def exists(self, email: Email) -> bool:
-        def _get() -> bool:
-            admin, _identity, _settings = build_services(self._creds)
-            request = admin.groups().get(groupKey=email)
-            try:
-                _retry_transient(request.execute)
-            except HttpError as error:
-                if error.status_code == 404:
-                    return False
-                raise
-            return True
+    async def exists(self, group_email: Email) -> bool:
+        # Only the Admin Directory client: the other two exist to configure a
+        # group, and this asks nothing but whether there is one.
+        admin = await asyncio.to_thread(
+            discovery.build,
+            "admin",
+            "directory_v1",
+            credentials=self._creds,
+            cache_discovery=False,
+        )
+        return await asyncio.to_thread(_group_exists, admin, group_email)
 
-        return await asyncio.to_thread(_get)
-
-    async def ensure(self, email: Email, name: str) -> ProvisionedGroup:
+    async def ensure(self, group_email: Email, name: str) -> ProvisionedGroup:
         group = await (
             GoogleGroupBuilder()
-            .email(email)
+            .email(group_email)
             .name(name)
             .description(_PROVISION_DESCRIPTION)
             .secure_defaults()
@@ -234,11 +281,11 @@ class RecordingProvisioner:
         self._inner = inner
         self.ensured: list[tuple[str, str]] = []
 
-    async def exists(self, email: Email) -> bool:
-        return await self._inner.exists(email)
+    async def exists(self, group_email: Email) -> bool:
+        return await self._inner.exists(group_email)
 
-    async def ensure(self, email: Email, name: str) -> ProvisionedGroup:
-        self.ensured.append((email, name))
+    async def ensure(self, group_email: Email, name: str) -> ProvisionedGroup:
+        self.ensured.append((group_email, name))
         return ProvisionedGroup(
             settings=dict(SECURE_SETTINGS),  # type: ignore[arg-type]
             labels=dict(SECURITY_LABEL.get("labels", {})),
@@ -281,6 +328,46 @@ def _skip_gate(
         )
         return SyncOutcome.SkippedExampleEmail
     return group_email
+
+
+def _add_outcome(status: int | None, reasons: set[str | None]) -> SyncOutcome:
+    """What Google's refusal of a membership insert means.
+
+    A 409 is the desired state already holding. A 412 `conditionNotMet` is the
+    Cloud Identity security label refusing an address with no Google account
+    attached: Google answers with its generic precondition payload, which names
+    an `If-Match` header the request never carried, so the reason code is all
+    there is to key on and the meaning comes from the documented rule rather
+    than from anything in the body. A 404 `notFound` is an address Google is
+    authoritative for and does not have.
+
+    That 404 is ambiguous here: `members().insert` answers the same way for a
+    group it cannot find, and this layer has no way to tell the two apart. Which
+    is why this only classifies - only the sweep, which listed the group moments
+    earlier, knows enough to act on the answer.
+
+    Every other status, and any other 412, stays a plain failure. These two
+    pairs are the ones we have evidence for, and a refusal we cannot read is not
+    a refusal worth remembering.
+    """
+    if status == 409:
+        return SyncOutcome.AlreadyConverged
+    if status == 412 and "conditionNotMet" in reasons:
+        return SyncOutcome.NoGoogleAccount
+    if status == 404 and "notFound" in reasons:
+        return SyncOutcome.AddressNotFound
+    return SyncOutcome.Failed
+
+
+def _remove_outcome(status: int | None) -> SyncOutcome:
+    """A 404 on a delete is the member already gone - converged, not failed.
+
+    A delete has no address verdict to offer, unlike `_add_outcome`: Google
+    refuses an address it will not hold on the way in, never on the way out.
+    """
+    if status == 404:
+        return SyncOutcome.AlreadyConverged
+    return SyncOutcome.Failed
 
 
 class GoogleGroupSync:
@@ -360,8 +447,24 @@ class GoogleGroupSync:
             else:
                 await group.remove_member(member_email)
         except HttpError as error:
-            converged_status = 409 if op == "add" else 404
-            if error.status_code == converged_status:
+            # Status code plus Google's own machine reason codes - what tells a
+            # quota signal from a bad-address rejection from a real fault. Only
+            # the `reason` field of each detail: never the `message` or the
+            # rendered `HttpError`, which carry the request URI and, for a
+            # remove, the member address as a path segment. `error_details` is a
+            # parsed list for a JSON error body, an empty string otherwise.
+            details = error.error_details
+            reasons: set[str | None] = (
+                {d.get("reason") for d in details if isinstance(d, dict)}
+                if isinstance(details, list)
+                else set()
+            )
+            outcome = (
+                _add_outcome(error.status_code, reasons)
+                if op == "add"
+                else _remove_outcome(error.status_code)
+            )
+            if outcome is SyncOutcome.AlreadyConverged:
                 # The mutation came back saying the desired state already
                 # holds: an add on an existing member, or a remove on a
                 # non-member. Not a failure -
@@ -375,27 +478,25 @@ class GoogleGroupSync:
                     op,
                     gated,
                 )
-                return SyncOutcome.AlreadyConverged
-            # Status code plus Google's own machine reason codes - what tells a
-            # quota signal from a bad-address rejection from a real fault. Only
-            # the `reason` field of each detail: never the `message` or the
-            # rendered `HttpError`, which carry the request URI and, for a
-            # remove, the member address as a path segment. `error_details` is a
-            # parsed list for a JSON error body, an empty string otherwise.
-            details = error.error_details
-            reasons = (
-                [d.get("reason") for d in details if isinstance(d, dict)]
-                if isinstance(details, list)
-                else []
-            )
-            logger.error(
-                "google sync %s on %s failed: status %s reasons %s",
-                op,
-                gated,
-                error.status_code,
-                reasons,
-            )
-            return SyncOutcome.Failed
+            elif outcome in UNMIRRORABLE:
+                # A verdict about the address, not a fault: nothing to alarm on,
+                # but the sweep wants to see it the run it first learns it. The
+                # reason, like every other line here, travels without the address.
+                logger.info(
+                    "google sync %s on %s refused by google: %s",
+                    op,
+                    gated,
+                    outcome.value,
+                )
+            else:
+                logger.error(
+                    "google sync %s on %s failed: status %s reasons %s",
+                    op,
+                    gated,
+                    error.status_code,
+                    reasons,
+                )
+            return outcome
         return SyncOutcome.Applied
 
 

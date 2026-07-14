@@ -13,6 +13,8 @@ from rosadmin.group_sync import (
     DryRunGroupSync,
     GoogleGroupSync,
     SyncOutcome,
+    _add_outcome,
+    _remove_outcome,
     _skip_gate,
     _write_rate_from_env,
     group_sync_from_env,
@@ -148,7 +150,8 @@ async def test_http_error_404_on_remove_is_already_converged(monkeypatch, caplog
 
 @pytest.mark.asyncio
 async def test_http_error_404_on_add_still_fails(monkeypatch):
-    """404 is only the converged signal on a remove; on an add it's a real failure."""
+    """404 is the converged signal on a remove, never on an add - and with no
+    `notFound` reason naming the address, it is not a verdict about one either."""
 
     async def _raise(self, email):
         raise _fake_http_error(status="404")
@@ -168,3 +171,27 @@ async def test_http_error_409_on_remove_still_fails(monkeypatch):
     sync = _sync_with_stub_services(monkeypatch, remove_member=_raise)
     outcome = await sync.remove(Email("group@example.org"), Email("member@example.org"))
     assert outcome == SyncOutcome.Failed
+
+
+@pytest.mark.parametrize(
+    ("op", "status", "reasons", "expected"),
+    [
+        ("add", 409, set(), SyncOutcome.AlreadyConverged),
+        ("add", 412, {"conditionNotMet"}, SyncOutcome.NoGoogleAccount),
+        ("add", 404, {"notFound"}, SyncOutcome.AddressNotFound),
+        ("add", 412, {"backendError"}, SyncOutcome.Failed),
+        ("add", 403, {"quotaExceeded"}, SyncOutcome.Failed),
+        ("add", 500, set(), SyncOutcome.Failed),
+        ("remove", 404, set(), SyncOutcome.AlreadyConverged),
+        ("remove", 500, set(), SyncOutcome.Failed),
+    ],
+)
+def test_classifiers_read_googles_refusal(op, status, reasons, expected):
+    """The whole status-and-reason table, in one place.
+
+    A unit rather than a scenario because there is no asking Google for a 412 on
+    demand: the classifiers are pure, and this is the only layer where every
+    answer Google can give is reachable.
+    """
+    outcome = _add_outcome(status, reasons) if op == "add" else _remove_outcome(status)
+    assert outcome == expected

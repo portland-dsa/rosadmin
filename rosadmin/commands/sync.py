@@ -153,11 +153,19 @@ def _report(report: SweepReport, *, dry_run: bool) -> None:
             p.refused_over_cap,
             p.failed,
         )
+    if report.refusals is not None and report.refusals.received > 0:
+        r = report.refusals
+        logger.info(
+            "refusals: %d received, %d recorded, %d refused by the fuse",
+            r.received,
+            r.recorded,
+            r.refused,
+        )
     mode = "dry-run" if dry_run else "applied"
     for g in report.groups:
         logger.info(
-            "%s %s: planned +%d/-%d, applied %d, converged %d, "
-            "skipped %d, refused %d, failed %d",
+            "%s %s: planned +%d/-%d, applied %d, converged %d, skipped %d, "
+            "excluded %d (%d newly refused), refused %d, failed %d",
             mode,
             g.group_email,
             g.planned_adds,
@@ -165,6 +173,8 @@ def _report(report: SweepReport, *, dry_run: bool) -> None:
             g.applied,
             g.already_converged,
             g.skipped,
+            g.excluded,
+            g.unmirrorable,
             g.refused,
             g.failed,
         )

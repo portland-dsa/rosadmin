@@ -33,6 +33,7 @@ _TABLES = (
     "members",
     "leadership_bodies",
     "body_memberships",
+    "unmirrorable_addresses",
     "sessions",
     "jti_replay",
     "rate_limit_counters",
@@ -119,8 +120,13 @@ def _ensure_docker_host() -> None:
 _TRUNCATE_ALL = "TRUNCATE " + ", ".join(_TABLES) + " RESTART IDENTITY CASCADE"
 
 #: `bootstrap_state` is a fixed single row, not a domain table: TRUNCATE would
-#: leave it empty rather than reset it, so a plain UPDATE restores the default.
-_RESET_BOOTSTRAP = "UPDATE bootstrap_state SET bootstrapped_group_provisioning = false"
+#: leave it empty rather than reset it, so a plain UPDATE restores the defaults.
+#: Every marker it holds resets together - a scenario that inherited one armed
+#: from the scenario before it would be testing the wrong run entirely.
+_RESET_BOOTSTRAP = (
+    "UPDATE bootstrap_state SET bootstrapped_group_provisioning = false, "
+    "bootstrapped_refusal_learning = false"
+)
 
 
 @dataclass

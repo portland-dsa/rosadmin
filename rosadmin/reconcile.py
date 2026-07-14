@@ -1,18 +1,25 @@
 """The reconcile sweep's pure core: desired versus actual, per group.
 
 `plan_group` is a pure function from one group's desired set and its actual
-remote member list to the adds and removes that converge them. The two
-safety rules live here, in testable logic rather than in the apply loop:
-only plain USER members are ever removable (owners, managers, and nested
-groups survive every sweep), and a mass removal trips a fuse instead of
-executing.
+remote member list to the adds and removes that converge them. Three safety
+rules live here, in testable logic rather than in the apply loop: only plain
+USER members are ever removable (owners, managers, and nested groups survive
+every sweep), a mass removal trips a fuse instead of executing, and an address
+Google has already refused to hold is not offered again - while still counting
+as desired, so it is never swept out either.
+
+That last set - the addresses of `rosadmin.db.unmirrorable` - is read once per
+run and grows as the run learns, which is why the sweep, not the Google
+boundary, is what writes a refusal down.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+from collections import Counter
 from dataclasses import dataclass
+from enum import Enum
 from uuid import UUID
 
 import psycopg
@@ -31,6 +38,12 @@ from rosadmin.db.directory import (
 )
 from rosadmin.db.reconcile import desired_audiences, desired_for_group
 from rosadmin.db.roster import PullReport, pull_roster
+from rosadmin.db.unmirrorable import (
+    is_refusal_learning_bootstrapped,
+    mark_refusal_learning_bootstrapped,
+    record_unmirrorable,
+    unmirrorable_addresses,
+)
 from rosadmin.google_group import (
     SECURE_SETTINGS,
     SECURITY_LABEL,
@@ -45,6 +58,8 @@ from rosadmin.group_naming import (
     GroupNameTooLong,
 )
 from rosadmin.group_sync import (
+    SKIPPED,
+    UNMIRRORABLE,
     GroupLister,
     GroupProvisioner,
     GroupSync,
@@ -82,6 +97,10 @@ class GroupPlan:
     group_email: Email
     adds: tuple[PlannedAdd, ...]
     removes: tuple[Email, ...]
+    #: Desired members Google has already refused, so the sweep does not offer
+    #: them. They carry their member id, which is what the log line names - the
+    #: address never reaches the journal.
+    excluded: tuple[PlannedAdd, ...]
     #: How many removals the fuse refused. Zero means it did not trip; the
     #: refused removals are absent from `removes` entirely.
     refused_removes: int
@@ -100,22 +119,38 @@ def plan_group(
     desired: dict[str, UUID],
     actual: list[GroupMemberEntry],
     *,
+    unmirrorable: set[str],
     allow_mass_removal: bool,
 ) -> GroupPlan:
-    """Diff one group. `desired` keys are casefolded addresses.
+    """Diff one group. `desired` keys and `unmirrorable` are casefolded addresses.
 
     Adds compare against every actual entry regardless of role or type - a
     member already present as a MANAGER must not be re-added as a MEMBER.
     Removes draw only from plain USER MEMBER entries, so owners, managers,
     and nested groups are structurally untouchable. Addresses compare
     casefolded because Google reports case it does not enforce.
+
+    An address Google has refused is excluded from the adds - it lands in
+    `excluded` instead - but it stays desired, and so is still counted against
+    the removes. A member Google will not admit is not a member Google should
+    evict: some are already in their group from before their account was
+    deleted, and an outage answering 412 to every insert must not be able to
+    empty a group. Dropping the address from `desired` outright - the shape
+    `db.reconcile._admit` uses for `@example.com`, where the address can never
+    be present in the first place - would instead make every refused member a
+    stranger for the next sweep to remove.
     """
     present = {entry.email.casefold() for entry in actual}
-    adds = tuple(
-        PlannedAdd(address=Email(address), member_id=member_id)
-        for address, member_id in sorted(desired.items())
-        if address not in present
-    )
+    adds: list[PlannedAdd] = []
+    excluded: list[PlannedAdd] = []
+    for address, member_id in sorted(desired.items()):
+        if address in present:
+            continue
+        planned = PlannedAdd(address=Email(address), member_id=member_id)
+        if address in unmirrorable:
+            excluded.append(planned)
+        else:
+            adds.append(planned)
     removable = [
         entry
         for entry in actual
@@ -124,15 +159,14 @@ def plan_group(
         and entry.email.casefold() not in desired
     ]
     removes = tuple(Email(entry.email) for entry in removable)
-    if allow_mass_removal or len(removes) <= _removal_budget(len(actual)):
-        return GroupPlan(
-            group_email=group_email, adds=adds, removes=removes, refused_removes=0
-        )
+    over_budget = len(removes) > _removal_budget(len(actual))
+    fuse_trips = over_budget and not allow_mass_removal
     return GroupPlan(
         group_email=group_email,
-        adds=adds,
-        removes=(),
-        refused_removes=len(removes),
+        adds=tuple(adds),
+        removes=() if fuse_trips else removes,
+        excluded=tuple(excluded),
+        refused_removes=len(removes) if fuse_trips else 0,
     )
 
 
@@ -387,8 +421,46 @@ class GroupOutcome:
     applied: int
     already_converged: int
     skipped: int
+    #: Desired members not offered because Google has already refused their
+    #: address. Steady-state - the size of the sediment - and not a failure.
+    excluded: int
+    #: Refusals Google issued this run that it had not issued before - counted as
+    #: they are received, not as they are stored, so that no failure of the store
+    #: can quiet the alarm that reads them. News, not sediment.
+    unmirrorable: int
     refused: int
     failed: int
+
+
+#: How many refusals one armed run may write down. A steady state meets a
+#: handful - a member joins carrying an address with no Google account behind it -
+#: so a run meeting dozens is not learning about the roster, it is learning that
+#: something outside it has changed: a scope withdrawn, the security label
+#: misapplied, Google answering 412 to everything. A batch past this ceiling is
+#: refused wholesale rather than recorded, on the same principle as the removal
+#: fuse and the creation tripwire: the point of a fuse is that it will not do the
+#: thing, and a fuse that merely reported afterwards would leave the roster
+#: suppressed for a season and go quiet on the very next run, having nothing left
+#: to learn.
+REFUSAL_FUSE_CEILING = 25
+
+
+@dataclass(frozen=True)
+class RefusalReport:
+    """What one run did with the refusals Google issued it.
+
+    `received` counts them as Google gave them, so no failure of the store can
+    quiet what reads it. `recorded` is what actually landed. `refused` is the fuse
+    saying no - the batch was too large to believe, and none of it was written.
+    """
+
+    received: int
+    recorded: int
+    refused: int
+
+    @property
+    def has_failures(self) -> bool:
+        return self.refused > 0 or self.recorded < self.received - self.refused
 
 
 @dataclass(frozen=True)
@@ -401,12 +473,16 @@ class SweepReport:
     #: reported desired state and applied nothing.
     lister_available: bool
     provision: ProvisionReport | None = None
+    refusals: RefusalReport | None = None
 
     @property
     def has_failures(self) -> bool:
         provision_failed = self.provision is not None and self.provision.has_failures
-        return provision_failed or any(
-            g.failed > 0 or g.refused > 0 for g in self.groups
+        refusals_failed = self.refusals is not None and self.refusals.has_failures
+        return (
+            provision_failed
+            or refusals_failed
+            or any(g.failed > 0 or g.refused > 0 for g in self.groups)
         )
 
 
@@ -509,6 +585,15 @@ async def _sweep_locked(
             lister_available=False,
             provision=provision_report,
         )
+    # Read once for the whole run, then deliberately mutated by `_apply` as each
+    # refusal is met: a group swept later never re-offers an address an earlier
+    # group has just proved bad, so a run meets each address once rather than once
+    # per group it appears in.
+    unmirrorable = await unmirrorable_addresses(pool)
+    # Held, not written, until the run is over: only the size of the whole batch
+    # can tell a trickle of new refusals from an event, and `_commit_refusals` is
+    # where that judgement is made.
+    refusals: list[Refusal] = []
     outcomes: list[GroupOutcome] = []
     for group_email, desired in sorted(audiences.items()):
         try:
@@ -527,13 +612,19 @@ async def _sweep_locked(
                     applied=0,
                     already_converged=0,
                     skipped=0,
+                    excluded=0,
+                    unmirrorable=0,
                     refused=0,
                     failed=1,
                 )
             )
             continue
         plan = plan_group(
-            group_email, desired, actual, allow_mass_removal=allow_mass_removal
+            group_email,
+            desired,
+            actual,
+            unmirrorable=unmirrorable,
+            allow_mass_removal=allow_mass_removal,
         )
         if plan.fuse_tripped:
             logger.error(
@@ -543,29 +634,82 @@ async def _sweep_locked(
                 plan.refused_removes,
                 len(actual),
             )
-        if len(plan.adds) > 0 or len(plan.removes) > 0:
+        if len(plan.adds) > 0 or len(plan.removes) > 0 or len(plan.excluded) > 0:
             fresh = await desired_for_group(pool, group_email, main_group_email)
             plan = _recheck(plan, fresh)
-        outcomes.append(await _apply(plan, sync=sync, audit=audit))
+        outcomes.append(
+            await _apply(
+                plan,
+                sync=sync,
+                audit=audit,
+                lister=lister,
+                unmirrorable=unmirrorable,
+                refusals=refusals,
+            )
+        )
     return SweepReport(
         pull=pull,
         groups=tuple(outcomes),
         lister_available=True,
         provision=provision_report,
+        refusals=await _commit_refusals(pool, refusals, dry_run=dry_run),
     )
+
+
+async def _commit_refusals(
+    pool: AsyncConnectionPool, refusals: list[Refusal], *, dry_run: bool
+) -> RefusalReport:
+    """Write down what Google refused this run - or, past the fuse, refuse to.
+
+    Nothing is written until the whole run has been seen, because the size of the
+    batch is the only thing that tells sediment from an event. A first run meets
+    the entire standing cohort at once and writes it freely, arming the fuse
+    behind itself; an armed run that suddenly meets dozens is being told something
+    about Google, not about the roster, and recording that would suppress those
+    members for a season and then - having nothing left to learn - report itself
+    green forever after. So it records none of them, says so, and fails. The
+    addresses are simply offered again next run, which is where they started.
+    """
+    received = len(refusals)
+    if dry_run:
+        if received > 0:
+            logger.info("dry-run: would record %d refused addresses", received)
+        return RefusalReport(received=received, recorded=0, refused=0)
+    bootstrapped = await is_refusal_learning_bootstrapped(pool)
+    if bootstrapped and received > REFUSAL_FUSE_CEILING:
+        logger.error(
+            "refusal fuse: google refused %d addresses it had not refused before, "
+            "past the ceiling of %d; recording none of them. nobody was removed and "
+            "nobody is newly withheld - the sweep will offer them all again next run "
+            "- but a refusal on this scale is a change outside the roster, and the "
+            "runbook says what to look at",
+            received,
+            REFUSAL_FUSE_CEILING,
+        )
+        return RefusalReport(received=received, recorded=0, refused=received)
+    recorded = 0
+    for refusal in refusals:
+        if await _remember_refusal(pool, refusal):
+            recorded += 1
+    if not bootstrapped and recorded > 0:
+        await mark_refusal_learning_bootstrapped(pool)
+    return RefusalReport(received=received, recorded=recorded, refused=0)
 
 
 def _recheck(plan: GroupPlan, fresh: dict[str, UUID]) -> GroupPlan:
     """Drop plan entries a concurrent panel write has outdated.
 
     An add whose member is no longer desired, or a remove whose address now
-    is, would undo a write that happened after the snapshot. The residue a
+    is, would undo a write that happened after the snapshot. An exclusion is
+    filtered on the same rule as an add, since a member dropped from desired
+    since the snapshot is no longer being withheld from anything. The residue a
     recheck cannot catch self-heals on the next sweep.
     """
     return GroupPlan(
         group_email=plan.group_email,
         adds=tuple(a for a in plan.adds if a.address.casefold() in fresh),
         removes=tuple(r for r in plan.removes if r.casefold() not in fresh),
+        excluded=tuple(e for e in plan.excluded if e.address.casefold() in fresh),
         refused_removes=plan.refused_removes,
     )
 
@@ -575,14 +719,121 @@ def _recheck(plan: GroupPlan, fresh: dict[str, UUID]) -> GroupPlan:
 SWEEP_ACTOR = "sweep"
 
 
-async def _apply(plan: GroupPlan, *, sync: GroupSync, audit: AuditSink) -> GroupOutcome:
+class Presence(Enum):
+    """What Google says about a group when an insert's 404 makes it matter.
+
+    Three states, not a bool: "the group is gone" and "Google would not tell me"
+    lead to the same caution but are not the same fact, and an operator reading
+    `google no longer has everyone@...` when the truth was an expired token has
+    been told something false about their tenant.
+    """
+
+    Present = "present"
+    Gone = "gone"
+    Unknown = "unknown"
+
+
+@dataclass(frozen=True)
+class Refusal:
+    """One address Google refused, and the member and group it was refused for.
+
+    Held rather than written the moment it is met: a refusal is only believable
+    once the group it was refused on is known to still exist, and only recordable
+    once the size of the run's whole batch is known.
+    """
+
+    address: Email
+    member_id: UUID
+    group_email: Email
+    outcome: SyncOutcome
+
+
+async def _presence(lister: GroupLister, group_email: Email) -> Presence:
+    """Ask Google whether the group is still there - only ever to read a 404.
+
+    An insert answers `404 notFound` both for an address Google does not have
+    and for a group it does not have, and the sweep's opening listing only
+    vouches for the group as of that moment: a bulk run paces its writes, so its
+    last insert can land half an hour after the listing that spoke for it. This
+    settles the ambiguity before a member's address is written off for a season
+    on the strength of it.
+    """
+    try:
+        found = await lister.exists(group_email)
+    except HttpError as error:
+        logger.error(
+            "sweep: google would not say whether %s still exists (status %s); "
+            "treating its refusals as unreadable rather than as verdicts",
+            group_email,
+            error.status_code,
+        )
+        return Presence.Unknown
+    return Presence.Present if found else Presence.Gone
+
+
+async def _remember_refusal(pool: AsyncConnectionPool, refusal: Refusal) -> bool:
+    """Write one refusal down, and never let that write end the sweep.
+
+    Like the audit row beside it, this records something that has already
+    happened out at Google. A database that cannot take it down is worth an
+    operator's attention, but it is not worth abandoning what the run has not
+    reached yet: the unrecorded address is simply offered - and refused - again
+    next run, which is exactly where it started. Answers whether the row landed,
+    because a refusal that was not written down is one the next run must go and
+    ask about again, and the report says so.
+
+    The failure is named by its class and SQLSTATE, never by the server's own
+    message: Postgres puts the whole offending row in the detail of a constraint
+    violation, and that row carries the member's address.
+    """
+    try:
+        await record_unmirrorable(pool, refusal.address, refusal.outcome)
+    except psycopg.Error as error:
+        logger.error(
+            "sweep: could not record google's refusal of member %s on %s (%s): "
+            "%s, sqlstate %s",
+            refusal.member_id,
+            refusal.group_email,
+            refusal.outcome.value,
+            type(error).__name__,
+            error.sqlstate,
+        )
+        return False
+    logger.info(
+        "sweep: google refuses member %s on %s (%s); "
+        "the address will not be offered again this window",
+        refusal.member_id,
+        refusal.group_email,
+        refusal.outcome.value,
+    )
+    return True
+
+
+async def _apply(
+    plan: GroupPlan,
+    *,
+    sync: GroupSync,
+    audit: AuditSink,
+    lister: GroupLister,
+    unmirrorable: set[str],
+    refusals: list[Refusal],
+) -> GroupOutcome:
     """Adds first, then removes - a transient inconsistency errs toward access."""
-    applied = converged = skipped = failed = 0
+    tally: Counter[SyncOutcome] = Counter()
+    presence: Presence | None = None
+    found: list[Refusal] = []
     for add in plan.adds:
         outcome = await sync.add(plan.group_email, add.address)
-        applied, converged, skipped, failed = _tally(
-            outcome, applied, converged, skipped, failed
-        )
+        if outcome is SyncOutcome.AddressNotFound:
+            if presence is None:
+                presence = await _presence(lister, plan.group_email)
+            if presence is Presence.Gone:
+                return _abandoned(plan, tally, presence)
+            if presence is Presence.Unknown:
+                # The 404 may have been about the group. Unreadable, so unrecorded.
+                tally[SyncOutcome.Failed] += 1
+                continue
+        tally[outcome] += 1
         if outcome is SyncOutcome.Applied:
             await record_best_effort(
                 audit,
@@ -591,11 +842,29 @@ async def _apply(plan: GroupPlan, *, sync: GroupSync, audit: AuditSink) -> Group
                 subject=str(add.member_id),
                 detail={"group": plan.group_email},
             )
+        elif outcome in UNMIRRORABLE:
+            found.append(
+                Refusal(
+                    address=add.address,
+                    member_id=add.member_id,
+                    group_email=plan.group_email,
+                    outcome=outcome,
+                )
+            )
+            unmirrorable.add(add.address.casefold())
+    # The adds took as long as they took. A 404 read at the start of them is only
+    # as good as the group still being there at the end, so ask once more before
+    # any of it is believed.
+    if any(r.outcome is SyncOutcome.AddressNotFound for r in found):
+        presence = await _presence(lister, plan.group_email)
+        if presence is not Presence.Present:
+            return _abandoned(plan, tally, presence)
+    refusals.extend(found)
+
+    removes_converged = 0
     for address in plan.removes:
         outcome = await sync.remove(plan.group_email, address)
-        applied, converged, skipped, failed = _tally(
-            outcome, applied, converged, skipped, failed
-        )
+        tally[outcome] += 1
         if outcome is SyncOutcome.Applied:
             await record_best_effort(
                 audit,
@@ -604,25 +873,111 @@ async def _apply(plan: GroupPlan, *, sync: GroupSync, audit: AuditSink) -> Group
                 subject=None,
                 detail={"group": plan.group_email},
             )
+        elif outcome is SyncOutcome.AlreadyConverged:
+            removes_converged += 1
+    # Every removal answering "already gone", with nothing this run having proved
+    # the group alive, is what a deleted group looks like from the outside - the
+    # one shape of it the adds cannot catch, since a converged group plans none.
+    if (
+        len(plan.removes) > 0
+        and removes_converged == len(plan.removes)
+        and tally[SyncOutcome.Applied] == 0
+        and await _presence(lister, plan.group_email) is Presence.Gone
+    ):
+        logger.error(
+            "sweep: every removal on %s reported the member already gone, and google "
+            "no longer has the group; it converged with nothing, not with the records",
+            plan.group_email,
+        )
+        return GroupOutcome(
+            group_email=plan.group_email,
+            planned_adds=len(plan.adds),
+            planned_removes=len(plan.removes),
+            applied=0,
+            already_converged=0,
+            skipped=sum(tally[outcome] for outcome in SKIPPED),
+            excluded=len(plan.excluded),
+            unmirrorable=0,
+            refused=plan.refused_removes,
+            failed=len(plan.removes),
+        )
+
+    _log_excluded(plan)
     return GroupOutcome(
         group_email=plan.group_email,
         planned_adds=len(plan.adds),
         planned_removes=len(plan.removes),
-        applied=applied,
-        already_converged=converged,
-        skipped=skipped,
+        applied=tally[SyncOutcome.Applied],
+        already_converged=tally[SyncOutcome.AlreadyConverged],
+        skipped=sum(tally[outcome] for outcome in SKIPPED),
+        excluded=len(plan.excluded),
+        unmirrorable=sum(tally[outcome] for outcome in UNMIRRORABLE),
         refused=plan.refused_removes,
-        failed=failed,
+        failed=tally[SyncOutcome.Failed],
     )
 
 
-def _tally(
-    outcome: SyncOutcome, applied: int, converged: int, skipped: int, failed: int
-) -> tuple[int, int, int, int]:
-    if outcome is SyncOutcome.Applied:
-        return applied + 1, converged, skipped, failed
-    if outcome is SyncOutcome.AlreadyConverged:
-        return applied, converged + 1, skipped, failed
-    if outcome is SyncOutcome.Failed:
-        return applied, converged, skipped, failed + 1
-    return applied, converged, skipped + 1, failed
+def _abandoned(
+    plan: GroupPlan, tally: Counter[SyncOutcome], presence: Presence
+) -> GroupOutcome:
+    """The outcome for a group Google could not vouch for: everything left undone.
+
+    Whatever the plan still wanted is counted as failed - the adds never
+    attempted along with the one whose 404 raised the question, and the removes
+    the sweep declined to make against a group it cannot see. That is what makes
+    the run red, and a red run is the point: a linked body whose remote group has
+    gone missing is a hole in the records, not a quiet no-op.
+
+    Nothing this group refused is carried out of here, so the refusals it met are
+    dropped rather than written - which is what lets the line below say so
+    truthfully.
+    """
+    if presence is Presence.Gone:
+        logger.error(
+            "sweep: google no longer has %s; leaving it alone and recording nothing "
+            "against the members it refused",
+            plan.group_email,
+        )
+    else:
+        logger.error(
+            "sweep: cannot confirm %s still exists; leaving it alone this run",
+            plan.group_email,
+        )
+    settled = (
+        tally[SyncOutcome.Applied]
+        + tally[SyncOutcome.AlreadyConverged]
+        + sum(tally[outcome] for outcome in SKIPPED)
+        + sum(tally[outcome] for outcome in UNMIRRORABLE)
+    )
+    return GroupOutcome(
+        group_email=plan.group_email,
+        planned_adds=len(plan.adds),
+        planned_removes=len(plan.removes),
+        applied=tally[SyncOutcome.Applied],
+        already_converged=tally[SyncOutcome.AlreadyConverged],
+        skipped=sum(tally[outcome] for outcome in SKIPPED),
+        excluded=len(plan.excluded),
+        unmirrorable=sum(tally[outcome] for outcome in UNMIRRORABLE),
+        refused=plan.refused_removes,
+        failed=len(plan.adds) - settled + len(plan.removes),
+    )
+
+
+def _log_excluded(plan: GroupPlan) -> None:
+    """The count at INFO, the member ids at DEBUG - never the addresses.
+
+    The count is the standing size of the group's refused cohort and belongs in
+    every run's journal. The ids are hundreds of lines on the main group, so
+    they wait for someone who has turned DEBUG on to go looking for them.
+    """
+    if len(plan.excluded) == 0:
+        return
+    logger.info(
+        "sweep: %s has %d desired members google has already refused; not offering them",
+        plan.group_email,
+        len(plan.excluded),
+    )
+    for withheld in plan.excluded:
+        logger.debug(
+            "sweep: %s withholds member %s", plan.group_email, withheld.member_id
+        )

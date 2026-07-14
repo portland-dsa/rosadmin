@@ -25,6 +25,10 @@ is one forward migration with an optional `.rollback.sql` companion.
   place after some databases had already applied it with a broader UPDATE;
   since yoyo never re-runs an applied migration, this carries the narrower
   grant forward everywhere.
+- `create_unmirrorable_addresses.sql` - the addresses Google has refused to hold
+  as group members, with how it refused and when. The timestamp is a retry clock:
+  a refusal older than the sweep's window stops filtering, so an address that has
+  since gained a Google account is offered again on its own.
 
 Roles are not here: they are cluster-global while migrations run per-database, so
 the roles themselves (the group `rosadmin_app`, each stage's login role, and the

@@ -37,24 +37,44 @@ class FakeWorkspace:
     Runs the real `_skip_gate` so gate behavior cannot drift from the
     production sync, then mutates state and answers with the outcomes the
     real mirror would give (409-on-add and 404-on-remove map to
-    AlreadyConverged).
+    AlreadyConverged; an address in `no_google_account` draws the refusal a
+    security group gives an address with no Google identity behind it).
     """
 
     def __init__(self) -> None:
         self.groups: dict[str, dict[str, GroupMemberEntry]] = {}
         self.settings: dict[str, dict[str, str]] = {}
         self.labels: dict[str, dict[str, str]] = {}
+        #: Casefolded addresses Google has no account for, whatever group they
+        #: are offered to - a fact about the address, as it is at Google.
+        self.no_google_account: set[str] = set()
+        #: Casefolded addresses Google is authoritative for and does not have -
+        #: a deleted or mistyped Gmail, which draws a 404 rather than a 412.
+        self.unknown_address: set[str] = set()
+        #: Groups deleted at Google after the sweep listed them - the race the
+        #: presence check exists for. `list` still answers (the sweep read it
+        #: before the deletion), while `exists` and `add` behave as Google does
+        #: afterwards: the insert 404s exactly as an unknown address would, which
+        #: is the ambiguity the sweep has to resolve before it blames a member for
+        #: a hole in the group.
+        self.deleted_after_listing: set[str] = set()
+        #: Every (group, address) this run offered to the sync port. Cleared at
+        #: the start of each sweep, so a Then step reads the latest run alone
+        #: and a scenario can assert what a *second* sweep no longer offers.
+        self.offered: list[tuple[str, str]] = []
 
-    async def exists(self, email: Email) -> bool:
-        return email in self.groups
+    async def exists(self, group_email: Email) -> bool:
+        return (
+            group_email not in self.deleted_after_listing and group_email in self.groups
+        )
 
-    async def ensure(self, email: Email, name: str) -> ProvisionedGroup:
-        if email not in self.groups:
-            self.groups[email] = {}
-            self.settings[email] = {k: str(v) for k, v in SECURE_SETTINGS.items()}
-            self.labels[email] = dict(SECURITY_LABEL.get("labels", {}))
+    async def ensure(self, group_email: Email, name: str) -> ProvisionedGroup:
+        if group_email not in self.groups:
+            self.groups[group_email] = {}
+            self.settings[group_email] = {k: str(v) for k, v in SECURE_SETTINGS.items()}
+            self.labels[group_email] = dict(SECURITY_LABEL.get("labels", {}))
         return ProvisionedGroup(
-            settings=self.settings[email], labels=self.labels[email]
+            settings=self.settings[group_email], labels=self.labels[group_email]
         )
 
     def seed(
@@ -82,7 +102,16 @@ class FakeWorkspace:
         gated = _skip_gate(group_email, member_email, expect_example_emails=True)
         if isinstance(gated, SyncOutcome):
             return gated
+        self.offered.append((gated, member_email.casefold()))
+        if gated in self.deleted_after_listing:
+            # Google answers an insert into a group it no longer has exactly as it
+            # answers an insert of an address it does not have.
+            return SyncOutcome.AddressNotFound
         entries = self.groups.setdefault(gated, {})
+        if member_email.casefold() in self.no_google_account:
+            return SyncOutcome.NoGoogleAccount
+        if member_email.casefold() in self.unknown_address:
+            return SyncOutcome.AddressNotFound
         if member_email.casefold() in entries:
             return SyncOutcome.AlreadyConverged
         entries[member_email.casefold()] = GroupMemberEntry(
@@ -198,8 +227,88 @@ def step_seed_many(context, group, count):
         context.workspace.seed(group, f"seed{i}@example.net")
 
 
+@given('Google has no account for "{address:S}"')
+def step_no_google_account(context, address):
+    _ensure_context(context)
+    context.workspace.no_google_account.add(address.casefold())
+
+
+@given('Google does not have the address "{address:S}"')
+def step_unknown_address(context, address):
+    _ensure_context(context)
+    context.workspace.unknown_address.add(address.casefold())
+
+
+@given('Susie has deleted the group "{group:S}" at Google')
+def step_lost_group(context, group):
+    _ensure_context(context)
+    context.workspace.deleted_after_listing.add(group)
+
+
+@given("{count:d} members in good standing Google has no account for")
+def step_many_refused_members(context, count):
+    _ensure_context(context)
+    for i in range(count):
+        address = f"refused{i}@example.net"
+        step_member(context, address, "good_standing")
+        context.workspace.no_google_account.add(address)
+
+
+@given("refusal learning has already bootstrapped")
+def step_refusals_bootstrapped(context):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        conn.execute("UPDATE bootstrap_state SET bootstrapped_refusal_learning = true")
+
+
+@when("Ralsei fixes Google and the sweep runs again")
+def step_google_fixed_and_sweep(context):
+    """The outage is over: Google takes the addresses it was refusing.
+
+    The point of the fuse is that the run before this one wrote nothing down, so
+    there is nothing to clear and nobody stayed withheld - the members simply land
+    on the next run.
+    """
+    context.workspace.no_google_account.clear()
+    _run_sweep(context, dry_run=False)
+
+
+@then("{count:d} addresses are recorded unmirrorable")
+def step_count_recorded(context, count):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        cursor = conn.execute("SELECT count(*) FROM unmirrorable_addresses")
+        row = cursor.fetchone()
+    assert row is not None
+    assert row[0] == count
+
+
+@given('the group "{group:S}" already exists')
+def step_group_exists_empty(context, group):
+    """An empty group that is really there - what a refusal has to be read against.
+
+    Without it a scenario would lean on the fake's own bookkeeping to conjure the
+    group, and the presence check would be answering a question nothing asked.
+    """
+    _ensure_context(context)
+    context.workspace.groups.setdefault(group, {})
+
+
+@given('"{address:S}" was refused {days:d} days ago')
+def step_refused_days_ago(context, address, days):
+    """Backdate a refusal, which is the only way a scenario reaches the retry
+    window: `RETRY_AFTER` is measured against `observed_at`, and a row this run
+    writes is always fresh."""
+    _ensure_context(context)
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO unmirrorable_addresses (address, reason, observed_at) "
+            "VALUES (%s, %s, now() - make_interval(days => %s::int))",
+            (address.casefold(), SyncOutcome.NoGoogleAccount.value, days),
+        )
+
+
 def _run_sweep(context, *, dry_run: bool) -> None:
     workspace = context.workspace
+    workspace.offered.clear()
     sync = RecordingGroupSync() if dry_run else workspace
     context.recording = sync if dry_run else None
     context.audit = RecordingAuditSink()
@@ -215,6 +324,7 @@ def _run_sweep(context, *, dry_run: bool) -> None:
                 sync=sync,
                 audit=context.audit,
                 main_group_email=Email(context.main_group),
+                dry_run=dry_run,
             )
         finally:
             await pool.close()
@@ -270,6 +380,37 @@ def step_still_holds_seeded(context, group, count):
 @then("the sweep run reports failure")
 def step_reports_failure(context):
     assert context.report.has_failures
+
+
+@then("the sweep run reports success")
+def step_reports_success(context):
+    assert not context.report.has_failures
+
+
+@then('the sweep did not offer "{address:S}" to "{group:S}"')
+def step_did_not_offer(context, address, group):
+    assert (group, address.casefold()) not in context.workspace.offered
+
+
+@then('"{address:S}" is recorded unmirrorable for reason "{reason}"')
+def step_recorded_unmirrorable(context, address, reason):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        cursor = conn.execute(
+            "SELECT reason FROM unmirrorable_addresses WHERE address = %s",
+            (address.casefold(),),
+        )
+        row = cursor.fetchone()
+    assert row is not None, "the sweep recorded no refusal for that address"
+    assert row[0] == reason
+
+
+@then("no address is recorded unmirrorable")
+def step_nothing_recorded(context):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        cursor = conn.execute("SELECT count(*) FROM unmirrorable_addresses")
+        row = cursor.fetchone()
+    assert row is not None
+    assert row[0] == 0, "a refusal was written off against a member"
 
 
 @given('an unlinked body "{name}" of type "{body_type}"')

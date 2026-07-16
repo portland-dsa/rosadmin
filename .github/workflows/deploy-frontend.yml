@@ -1,8 +1,14 @@
-# Build the frontend static-site release artifact once on merge to main, then deploy
-# it to staging. CI holds no runtime credentials; it reaches the box only as a
-# short-lived tagged ephemeral Tailscale node, talking to the shell-less
-# deploy-rosadmin-frontend-staging user whose forced command is itself the staging boundary.
-# There is no production job yet - production is added after staging is well exercised.
+# Build the frontend static-site release artifact once on merge to main and deploy
+# it. CI holds no runtime credentials; it reaches the box only as a short-lived
+# tagged ephemeral Tailscale node, talking to a shell-less per-environment deploy
+# user whose forced command is itself the boundary
+# (deploy-rosadmin-frontend-staging, deploy-rosadmin-frontend-prod).
+#
+# Staging deploys unattended. Production is gated: deploy-production binds the
+# `Frontend Production` GitHub environment, whose required-reviewers rule pauses
+# every run for a human click before it swaps the live site. The one static artifact
+# serves both stages - the build bakes in no per-stage config (same-origin API, domain
+# root) - so production ships exactly the tree staging proved.
 name: deploy-frontend
 on:
     push:
@@ -71,3 +77,46 @@ jobs:
                   # just did, not a poll waiting on something else's rollout - no loop.
                   if [ "$("${ssh[@]}" "$DEPLOY_HOST" is-active)" = active ]; then echo ok; exit 0; fi
                   echo "staging did not become active" >&2; exit 1
+
+    deploy-production:
+        # Gated on staging deploy success, not standalone: production never ships a
+        # build staging rejected, and cannot even queue for approval until staging is
+        # green. The one static artifact from `build` serves both stages, so there is
+        # no production-only rebuild.
+        needs: [build, deploy-staging]
+        # The `Frontend Production` environment's required-reviewers rule pauses this
+        # run for a human approval before anything reaches the box. It also holds its
+        # own DEPLOY_HOST (deploy-rosadmin-frontend-prod@<box>), DEPLOY_SSH_KEY,
+        # and TS_OAUTH_* - never shared with staging's. NOTE: required-reviewers is a
+        # repo Settings -> Environments rule, NOT enforceable from this file; a freshly
+        # created environment has NO protection until it is set.
+        environment: Frontend Production
+        runs-on: ubuntu-24.04
+        steps:
+            - uses: actions/download-artifact@v4
+              with:
+                  name: frontend-${{ github.sha }}
+                  path: ./artifact
+            - uses: tailscale/github-action@6cae46e2d796f265265cfcf628b72a32b4d7cade # v3
+              with:
+                  oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+                  oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+                  tags: tag:ci-deploy
+            - name: ship + activate + smoke check
+              env:
+                  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}       # deploy-rosadmin-frontend-prod@<box-tailscale-name>
+                  DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }} # private key; pubkey is the deploy user's forced-command key
+              run: |
+                  set -euo pipefail
+                  SHA="${{ github.sha }}"
+                  install -d -m 700 ~/.ssh
+                  printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+                  chmod 600 ~/.ssh/deploy_key
+                  ssh=(ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new)
+                  TAR="artifact/frontend-$SHA.tar.gz"
+                  DIGEST="$(sha256sum "$TAR" | cut -d' ' -f1)"
+                  "${ssh[@]}" "$DEPLOY_HOST" "upload $SHA $DIGEST" < "$TAR"
+                  "${ssh[@]}" "$DEPLOY_HOST" "activate $SHA"
+                  # Same atomic symlink swap as staging: one is-active read is the gate.
+                  if [ "$("${ssh[@]}" "$DEPLOY_HOST" is-active)" = active ]; then echo ok; exit 0; fi
+                  echo "production did not become active" >&2; exit 1

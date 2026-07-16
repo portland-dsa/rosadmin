@@ -69,21 +69,19 @@ def serve(
             "running under systemd but no socket fd was inherited; "
             "refusing the TCP fallback (check LISTEN_PID/LISTEN_FDS delivery)"
         )
-    # Forwarded headers are trusted only on unix-socket listeners. On the
-    # inherited fd that trust is structural: the socket unit declares 0660
-    # and the ingress group, so the reverse proxy is the only possible peer.
-    # A bare --uds socket is a development convenience. Identity comes from the session
-    # cookie on every path. On TCP, uvicorn's loopback-only default stands.
+    # uvicorn's forwarded-header processing is left off on purpose. With
+    # proxy_headers, uvicorn would overwrite request.client from a client-supplied
+    # X-Forwarded-For - a value an attacker can rotate, which the rate limiter must
+    # never key on. rosadmin instead reads the one client-IP header Caddy sets over
+    # the private socket (X-Real-Client-IP) directly, as a rate-limit key only.
+    # Identity always comes from the session cookie; the socket's 0660 ingress group
+    # is what makes Caddy the only possible peer.
     if fd is not None:
         logging.info("listener: inherited socket fd %d", fd)
-        uvicorn.run(
-            "rosadmin.service:app", fd=fd, proxy_headers=True, forwarded_allow_ips="*"
-        )
+        uvicorn.run("rosadmin.service:app", fd=fd)
     elif uds is not None:
         logging.info("listener: unix socket %s", uds)
-        uvicorn.run(
-            "rosadmin.service:app", uds=uds, proxy_headers=True, forwarded_allow_ips="*"
-        )
+        uvicorn.run("rosadmin.service:app", uds=uds)
     else:
         logging.info("listener: http://%s:%d (local development)", host, port)
         uvicorn.run("rosadmin.service:app", host=host, port=port)

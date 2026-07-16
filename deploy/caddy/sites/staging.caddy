@@ -38,6 +38,15 @@ rosadmin.staging.portlanddsa.org {
 	# so {client_ip} is always the real peer here, never a forwarded header an
 	# outside client could forge.
 	handle /api/* {
+		# Cap the request body at the edge. FastAPI buffers the whole body before
+		# a route's auth/rate-limit checks run, and the search route is reachable
+		# pre-session, so without a cap an unauthenticated client could stream a
+		# huge body and exhaust backend memory before the 401. The API bodies are
+		# tiny JSON; 1MB is generous, and Caddy answers 413 without streaming the
+		# rest through.
+		request_body {
+			max_size 1MB
+		}
 		reverse_proxy unix//run/rosadmin/staging/api.sock {
 			header_up X-Real-Client-IP {client_ip}
 		}

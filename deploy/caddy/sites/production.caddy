@@ -1,0 +1,59 @@
+rosadmin.portlanddsa.org {
+	# Same-origin CSP for the Vite SPA plus its API: connect-src 'self'
+	# is already implied by default-src 'self', but the API surface
+	# deserves to be visible in the policy. img-src/font-src allow `data:`
+	# because Vite inlines small images/fonts that way; script-src stays at
+	# the 'self' default (no 'unsafe-inline'/'unsafe-eval'). Confirm no CSP
+	# violations in the browser console against the served build at launch.
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'"
+		Referrer-Policy "no-referrer"
+		# Not load-bearing security, just noise reduction.
+		-Server
+	}
+
+	# JSON access log to the default sink (stderr -> journald), for
+	# CrowdSec's crowdsecurity/caddy collection to consume.
+	log {
+		format json
+	}
+
+	# trusted_proxies is deliberately not configured. Caddy
+	# is the true edge (no CDN in front of it), so the connecting peer it
+	# observes on the socket is the real client; a trusted_proxies entry
+	# would instead make it trust a client-supplied X-Forwarded-For /
+	# X-Real-IP, which would let an attacker forge an innocent IP into the
+	# log and CrowdSec's ban list, or hide their own from both.
+
+	# The API crosses to the backend over its unix socket. The socket's
+	# 0660 group is what authorizes this hop - caddy is a member; no other
+	# local user is. A 502 here means the backend socket is not up (yet).
+	#
+	# X-Real-Client-IP carries the connecting peer's address across that socket
+	# hop, so the backend's per-IP rate limiter has something to key on. This is
+	# safe only because trusted_proxies is unset above - caddy is the true edge,
+	# so {client_ip} is always the real peer here, never a forwarded header an
+	# outside client could forge.
+	handle /api/* {
+		# Cap the request body at the edge. FastAPI buffers the whole body before
+		# a route's auth/rate-limit checks run, and the search route is reachable
+		# pre-session, so without a cap an unauthenticated client could stream a
+		# huge body and exhaust backend memory before the 401. The API bodies are
+		# tiny JSON; 1MB is generous, and Caddy answers 413 without streaming the
+		# rest through.
+		request_body {
+			max_size 1MB
+		}
+		reverse_proxy unix//run/rosadmin/production/api.sock {
+			header_up X-Real-Client-IP {client_ip}
+		}
+	}
+
+	# Everything else is the static frontend tree.
+	handle {
+		root * /opt/rosadmin-frontend/production/current
+		file_server
+	}
+}

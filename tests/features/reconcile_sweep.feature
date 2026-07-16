@@ -160,3 +160,12 @@ Feature: The reconcile sweep converges Google Groups to the records
     When the sweep runs with provisioning
     Then the provisioning report refused the creation
     And the sweep run reports failure
+
+  Scenario: The sweep sweeps out spent auth rows and keeps the live one
+    Given a spent jti "spamton-expired" that expired 1 day ago
+    And a rate-limit window for "login:spamton" opened 2 hours ago
+    And a live jti "ralsei-valid" expiring in 1 hour
+    When the sweep runs
+    Then the jti "spamton-expired" is gone
+    And no rate-limit window remains for "login:spamton"
+    And the jti "ralsei-valid" remains

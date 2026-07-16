@@ -575,3 +575,65 @@ def step_report_diverged(context):
 @then("the provisioning report refused the creation")
 def step_report_refused(context):
     assert context.report.provision.refused_over_cap > 0
+
+
+@given('a spent jti "{jti}" that expired {days:d} day ago')
+@given('a spent jti "{jti}" that expired {days:d} days ago')
+def step_spent_jti(context, jti, days):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO jti_replay (jti, expires_at) "
+            "VALUES (%s, now() - make_interval(days => %s::int))",
+            (jti, days),
+        )
+
+
+@given('a rate-limit window for "{bucket}" opened {hours:d} hour ago')
+@given('a rate-limit window for "{bucket}" opened {hours:d} hours ago')
+def step_old_rate_window(context, bucket, hours):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO rate_limit_counters (bucket, window_start, count) "
+            "VALUES (%s, now() - make_interval(hours => %s::int), 1)",
+            (bucket, hours),
+        )
+
+
+@given('a live jti "{jti}" expiring in {hours:d} hour')
+@given('a live jti "{jti}" expiring in {hours:d} hours')
+def step_live_jti(context, jti, hours):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO jti_replay (jti, expires_at) "
+            "VALUES (%s, now() + make_interval(hours => %s::int))",
+            (jti, hours),
+        )
+
+
+@then('the jti "{jti}" is gone')
+def step_jti_gone(context, jti):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        cursor = conn.execute("SELECT count(*) FROM jti_replay WHERE jti = %s", (jti,))
+        row = cursor.fetchone()
+    assert row is not None
+    assert row[0] == 0, "the spent jti was not pruned"
+
+
+@then('the jti "{jti}" remains')
+def step_jti_remains(context, jti):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        cursor = conn.execute("SELECT count(*) FROM jti_replay WHERE jti = %s", (jti,))
+        row = cursor.fetchone()
+    assert row is not None
+    assert row[0] == 1, "a live jti was pruned"
+
+
+@then('no rate-limit window remains for "{bucket}"')
+def step_no_rate_window(context, bucket):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        cursor = conn.execute(
+            "SELECT count(*) FROM rate_limit_counters WHERE bucket = %s", (bucket,)
+        )
+        row = cursor.fetchone()
+    assert row is not None
+    assert row[0] == 0, "the closed rate-limit window was not pruned"

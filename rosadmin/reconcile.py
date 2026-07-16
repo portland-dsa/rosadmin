@@ -36,6 +36,7 @@ from rosadmin.db.directory import (
     mark_group_provisioning_bootstrapped,
     set_body_link,
 )
+from rosadmin.db.prune import prune_expired
 from rosadmin.db.reconcile import desired_audiences, desired_for_group
 from rosadmin.db.roster import PullReport, pull_roster
 from rosadmin.db.unmirrorable import (
@@ -555,6 +556,16 @@ async def _sweep_locked(
     allow_mass_removal: bool,
     dry_run: bool,
 ) -> SweepReport:
+    # Housekeeping first, under the sweep lock: clear the expired auth rows that only
+    # ever grow. Runs regardless of pull or lister, independent of the reconcile
+    # itself, so even a quiet sweep keeps jti_replay and rate_limit_counters bounded.
+    pruned = await prune_expired(pool)
+    if pruned.jti or pruned.rate_limit:
+        logger.info(
+            "housekeeping: pruned %d expired jti and %d closed rate-limit windows",
+            pruned.jti,
+            pruned.rate_limit,
+        )
     pull: PullReport | None = None
     if source is not None:
         members = await source.list_members()

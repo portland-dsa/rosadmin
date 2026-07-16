@@ -83,13 +83,19 @@ async def my_groups(
 # A POST, not a GET with a query string: the searched email is member PII and must
 # never enter URLs, access logs, or history. Revisit if the HTTP QUERY method (safe
 # method with a body) lands with real ecosystem support.
-@api_router.post("/members/search", response_model=SearchResponse)
+@api_router.post(
+    "/members/search",
+    response_model=SearchResponse,
+    dependencies=[Depends(rate_limited)],
+)
 async def search_members(
     body: SearchRequest,
     directory: MemberDirectory = Depends(require_directory),
     principal: Principal = Depends(require_session),
 ) -> SearchResponse:
-    # search does not scope by principal (unused), but still demands a live session.
+    # Search does not scope by principal (unused) - any leader may look up any
+    # member to add them - but it demands a live session and is rate-limited, so a
+    # single session cannot bulk-enumerate the directory by email.
     return await directory.search(body.email)
 
 

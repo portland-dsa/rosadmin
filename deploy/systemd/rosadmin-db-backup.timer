@@ -1,0 +1,14 @@
+# Nightly trigger for rosadmin-db-backup.service. Enable with:
+#   systemctl enable --now rosadmin-db-backup.timer
+[Unit]
+Description=Nightly encrypted off-box backup of the production membership database
+
+[Timer]
+# 03:00 UTC, offset from the sibling bot's 03:30 backup so the two do not contend for
+# disk and the B2 upload at once; between the reconcile sweep's 4-hourly fires.
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

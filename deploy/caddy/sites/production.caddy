@@ -1,11 +1,10 @@
-rosadmin.staging.portlanddsa.org {
+rosadmin.portlanddsa.org {
 	# Same-origin CSP for the Vite SPA plus its API: connect-src 'self'
 	# is already implied by default-src 'self', but the API surface
 	# deserves to be visible in the policy. img-src/font-src allow `data:`
 	# because Vite inlines small images/fonts that way; script-src stays at
-	# the 'self' default (no 'unsafe-inline'/'unsafe-eval'). Still needs a
-	# browser-validation pass against the served build before production -
-	# watch the console for CSP violations.
+	# the 'self' default (no 'unsafe-inline'/'unsafe-eval'). Confirm no CSP
+	# violations in the browser console against the served build at launch.
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
@@ -47,14 +46,14 @@ rosadmin.staging.portlanddsa.org {
 		request_body {
 			max_size 1MB
 		}
-		reverse_proxy unix//run/rosadmin/staging/api.sock {
+		reverse_proxy unix//run/rosadmin/production/api.sock {
 			header_up X-Real-Client-IP {client_ip}
 		}
 	}
 
 	# Everything else is the static frontend tree.
 	handle {
-		root * /opt/rosadmin-frontend/staging/current
+		root * /opt/rosadmin-frontend/production/current
 		file_server
 	}
 }

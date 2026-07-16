@@ -94,20 +94,14 @@ case "$action" in
     ln -sfn "$tree/rosadmin" "$current.new"
     mv -Tf "$current.new" "$current"
 
-    # What "activated" means is per-instance, because the two boxes run different
-    # shapes. Staging runs a persistent web service, so activation restarts it (the
-    # single privileged action; sudoers permits ONLY this exact line). Production
-    # currently runs the reconcile sweep on a timer with no web service, so there is
-    # nothing to restart - the next timer fire picks up the swapped `current`. The
-    # smoke check there is verifying the freshly-linked tree against its own
-    # manifest, which needs no privilege. When the production web service lands, add
-    # its restart to the production arm to mirror staging.
+    # Activation restarts the persistent web service (panel) - the single privileged
+    # action; sudoers permits ONLY this exact line. Both stages run the same shape
+    # now, so both restart identically; the base unit's ExecStartPre re-verifies the
+    # freshly-linked tree against its manifest on start, and the sweep on its own
+    # timer picks up the same swapped `current`.
     case "$instance" in
-      staging)
+      staging | production)
         sudo /usr/bin/systemctl restart "rosadmin@$instance"
-        ;;
-      production)
-        ( cd "$current" && sha256sum -c --quiet --strict MANIFEST.sha256 )
         ;;
     esac
     echo "activated $sha on $instance"

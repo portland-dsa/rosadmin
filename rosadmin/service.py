@@ -80,6 +80,19 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     pool = None
     if getattr(app.state, "session_store", None) is None:
+        # A production build must pin its browser origin, or the cross-origin guard
+        # silently no-ops and CSRF rests on SameSite alone. Fake-login dev builds
+        # are exempt. Checked before any connection, so a misconfigured unit refuses
+        # to start rather than serving with the guard disarmed. Tests inject a
+        # session store and never reach this branch.
+        if (
+            app.state.settings.allowed_origin is None
+            and not app.state.settings.fake_login_enabled
+        ):
+            raise RuntimeError(
+                "ROSADMIN_ORIGIN is not set: a production build must pin its browser "
+                "origin so the cross-origin guard cannot silently no-op"
+            )
         pool = make_pool(dsn_from_env(os.environ))
         await pool.open()
         app.state.pool = pool

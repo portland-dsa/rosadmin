@@ -43,10 +43,11 @@ class ServiceSecrets(StrEnum):
     and `sso_bearer` exactly. The DWD key is the raw service-account JSON; the
     unit's `CREDENTIALS_FILE` env points the app at its delivered path.
 
-    Not every unit loads all five: the staging web `service` carries the SSO
-    bearer but no Solidarity Tech token (staging reads the in-process mock, which
-    ignores auth); the production `sync` sweep carries the token but no SSO bearer
-    (it authenticates no users). Each component names the subset it needs.
+    Not every unit loads all five: staging skips the Solidarity Tech token (it
+    reads the in-process mock, which ignores auth), so the `service` component
+    excludes it there; the web override loads the SSO bearer but the sweep override
+    does not (the sweep authenticates no users), while the sweep loads the token and
+    the web override does not. Each unit's override names the subset it loads.
     """
 
     AuditHmacKey = "audit-hmac-key"
@@ -56,16 +57,19 @@ class ServiceSecrets(StrEnum):
     #: The real Solidarity Tech bearer token. Production-only: the staging mock
     #: needs none, so only the production sweep loads it.
     SolidarityTechToken = "solidarity_tech_token"
+    #: The Backblaze B2 application key for the write-once backup bucket.
+    #: Production-only, and loaded only by the backup unit.
+    B2BackupApplicationKey = "b2_backup_application_key"
 
 
 class ServiceEnv(StrEnum):
-    """The non-secret botonio values templated into the staging override: the SSO
-    verifying key and the home guild id.
+    """The non-secret values rendered into the unit overrides and shared.env as
+    `Environment=` lines, filled from the encrypted secrets at render time.
 
     They live in the component's encrypted secrets file alongside the credentials
-    but are public, so they render into the unit as `Environment=` lines rather
-    than load as `.cred`s. Each member's value is both its key in that file and the
-    `${...}` placeholder it fills in the override template.
+    but are public, so they render as `Environment=` lines rather than load as
+    `.cred`s. Each member's value is both its key in that file and the `${...}`
+    placeholder it fills in a template.
     """
 
     BotonioSsoPubkey = "botonio_sso_pubkey"
@@ -85,6 +89,13 @@ class ServiceEnv(StrEnum):
     #: it must create one; an existing group is adopted with its name untouched.
     #: Paired with MainGroupEmail in the secrets file so the two stay together.
     MainGroupName = "main_group_name"
+    #: The box's age recipient (public key) the backup encrypts each dump to before
+    #: it leaves the box. Public, but box-specific, so rendered rather than committed.
+    BoxAgePubkey = "box_age_pubkey"
+    #: The write-once B2 bucket the backup uploads to, and the application key's id.
+    #: Non-secret on their own - the application key credential is what authorizes.
+    B2BucketName = "b2_bucket_name"
+    B2BackupKeyId = "b2_backup_key_id"
 
 
 ROSADMIN = DeploySpec(
@@ -94,22 +105,27 @@ ROSADMIN = DeploySpec(
     components=[
         Component(
             name="service",
-            # Staging-only: the web service (with its admin socket and mock
-            # Solidarity Tech source) is not on production yet. See the `sync`
-            # component below for the production sweep and the stopgap note there.
-            stages=frozenset({Stages.Staging}),
+            # Both stages, one component: the web panel and the reconcile sweep.
+            # Staging and production install the same units and differ only in
+            # rendered values and the one production-only credential - the real
+            # Solidarity Tech token, which staging (reading the in-process mock)
+            # does not carry.
+            stages=frozenset(Stages),
             secrets=Secret(
-                # The web service's four: no Solidarity Tech token (staging reads
-                # the mock, which ignores auth), so name the set explicitly rather
-                # than sweeping in every ServiceSecrets member.
                 names=frozenset(
                     {
                         ServiceSecrets.AuditHmacKey,
                         ServiceSecrets.DbMigrationPassword,
                         ServiceSecrets.BotonioSsoBearer,
                         ServiceSecrets.GoogleDwdKey,
+                        ServiceSecrets.SolidarityTechToken,
                     }
                 ),
+                # Staging reads the in-process mock, which needs no real token; only
+                # the production sweep loads it.
+                exclude={
+                    Stages.Staging: frozenset({ServiceSecrets.SolidarityTechToken})
+                },
                 src="{repo_root}/secrets/rosadmin/{stage}.enc.yaml",
             ),
             units=[
@@ -121,22 +137,36 @@ ROSADMIN = DeploySpec(
                     src="{repo_root}/deploy/systemd/rosadmin@.socket",
                     dest="/etc/systemd/system/rosadmin@.socket",
                 ),
+                # The web override renders only the botonio verifying key and guild
+                # id; the Google subject and roster source come from shared.env.
                 TemplatedUnit(
                     src="{repo_root}/deploy/systemd/rosadmin@{stage}.service.d/override.conf",
                     resource_loc="assets/rosadmin@{stage}.service.d/override.conf",
                     dest="/etc/systemd/system/rosadmin@{stage}.service.d/override.conf",
-                    env=Environment(names=frozenset(ServiceEnv)),
+                    env=Environment(
+                        names=frozenset(
+                            {ServiceEnv.BotonioSsoPubkey, ServiceEnv.SsoGuildId}
+                        )
+                    ),
                     per_stage=True,
                 ),
-                # The environment both the web service and the sweep read, so the
-                # tenant and roster cannot drift between them. One rendered file
-                # per stage, referenced by both units through EnvironmentFile=;
-                # root-only, since systemd reads it as root at unit start.
+                # The environment both the panel and the sweep read, so the tenant
+                # and roster cannot drift between them. One template per stage
+                # because staging reads the in-process mock and production the real
+                # API - a structural difference, not just different values.
+                # Referenced by both units through EnvironmentFile=; root-only,
+                # since systemd reads it as root at unit start.
                 TemplatedUnit(
-                    src="{repo_root}/deploy/systemd/rosadmin-shared.env",
-                    resource_loc="assets/rosadmin-shared.env",
+                    src="{repo_root}/deploy/systemd/rosadmin-shared.{stage}.env",
+                    resource_loc="assets/rosadmin-shared.{stage}.env",
                     dest="/etc/rosadmin/service/{stage}/shared.env",
-                    env=Environment(names=frozenset(ServiceEnv)),
+                    env=Environment(
+                        names=frozenset(ServiceEnv),
+                        # Production carries no mock persona map.
+                        exclude={
+                            Stages.Production: frozenset({ServiceEnv.StMockPersonas})
+                        },
+                    ),
                     file_mode=FilePermissions.GroupConfig,
                     # This is the same directory the credentials land in; if
                     # systemd provisioning creates it before creds provisioning
@@ -155,11 +185,17 @@ ROSADMIN = DeploySpec(
                     src="{repo_root}/deploy/systemd/rosadmin-sync@.timer",
                     dest="/etc/systemd/system/rosadmin-sync@.timer",
                 ),
+                # The sweep override renders the main group's address and name; the
+                # subject and roster source come from shared.env.
                 TemplatedUnit(
                     src="{repo_root}/deploy/systemd/rosadmin-sync@{stage}.service.d/override.conf",
                     resource_loc="assets/rosadmin-sync@{stage}.service.d/override.conf",
                     dest="/etc/systemd/system/rosadmin-sync@{stage}.service.d/override.conf",
-                    env=Environment(names=frozenset(ServiceEnv)),
+                    env=Environment(
+                        names=frozenset(
+                            {ServiceEnv.MainGroupEmail, ServiceEnv.MainGroupName}
+                        )
+                    ),
                     per_stage=True,
                 ),
             ],
@@ -167,6 +203,8 @@ ROSADMIN = DeploySpec(
             # migrations (granted to the rosadmin_app group role that each stage's
             # login role joins), so this declares only the structure: the group, the
             # migration and runtime roles, and the database the migration role owns.
+            # Idempotent per stage: production's roles and database already exist
+            # from the sweep launch and are left untouched.
             db=Db(
                 port=5433,
                 group_role=Role(name="rosadmin_app"),
@@ -192,91 +230,37 @@ ROSADMIN = DeploySpec(
             # the deploy wrapper, and a fresh box has no release to start yet.
             # Unit-file changes are applied by the head cheerleader (admin).
         ),
-        # STOPGAP (2026-07-10): production runs the reconcile sweep alone - there
-        # is no production web service yet. The sweep is split into its own
-        # component so it can go live on production without dragging the staging
-        # web units, the botonio SSO config, or the staging-only mock env onto the
-        # box. This deliberately duplicates the sync unit files the staging
-        # `service` component also installs; the bytes are identical, so a box
-        # that runs both stages just installs them twice.
-        #
-        # When the production web service lands, fold this back into `service`:
-        # extract the keys both units share (the Google subject, the Solidarity
-        # Tech source, the database name) into a rendered shared.env like staging,
-        # move migration back to the web unit's ExecStartPre, give `service` both
-        # stages, and delete this component. The production sweep runbook has the
-        # activation steps in the meantime.
         Component(
-            name="sync",
+            name="backup",
+            # Production only: staging's database is the mock roster, so there is
+            # nothing worth backing up there.
             stages=frozenset({Stages.Production}),
             secrets=Secret(
-                # The sweep writes audit rows, mirrors to Google, migrates the
-                # schema (no web service does it here), and reads the real
-                # Solidarity Tech roster. No SSO bearer: it authenticates no users.
-                names=frozenset(
-                    {
-                        ServiceSecrets.AuditHmacKey,
-                        ServiceSecrets.DbMigrationPassword,
-                        ServiceSecrets.GoogleDwdKey,
-                        ServiceSecrets.SolidarityTechToken,
-                    }
-                ),
+                names=frozenset({ServiceSecrets.B2BackupApplicationKey}),
                 src="{repo_root}/secrets/rosadmin/{stage}.enc.yaml",
             ),
             units=[
                 StaticUnit(
-                    src="{repo_root}/deploy/systemd/rosadmin-sync@.service",
-                    dest="/etc/systemd/system/rosadmin-sync@.service",
+                    src="{repo_root}/deploy/systemd/rosadmin-db-backup.timer",
+                    dest="/etc/systemd/system/rosadmin-db-backup.timer",
                 ),
-                StaticUnit(
-                    src="{repo_root}/deploy/systemd/rosadmin-sync@.timer",
-                    dest="/etc/systemd/system/rosadmin-sync@.timer",
-                ),
+                # The backup script itself is installed by hand at
+                # /usr/local/sbin/rosadmin-db-backup, not by this tool.
                 TemplatedUnit(
-                    src="{repo_root}/deploy/systemd/rosadmin-sync@{stage}.service.d/override.conf",
-                    resource_loc="assets/rosadmin-sync@{stage}.service.d/override.conf",
-                    dest="/etc/systemd/system/rosadmin-sync@{stage}.service.d/override.conf",
-                    # Only the org-address values are rendered from the secrets;
-                    # the rest of the override is stage-fixed literals (the domain,
-                    # the database name, the request budget) safe to commit.
+                    src="{repo_root}/deploy/systemd/rosadmin-db-backup.service.tmpl",
+                    resource_loc="assets/rosadmin-db-backup.service",
+                    dest="/etc/systemd/system/rosadmin-db-backup.service",
                     env=Environment(
                         names=frozenset(
                             {
-                                ServiceEnv.GoogleDwdSubject,
-                                ServiceEnv.MainGroupEmail,
-                                ServiceEnv.MainGroupName,
+                                ServiceEnv.BoxAgePubkey,
+                                ServiceEnv.B2BucketName,
+                                ServiceEnv.B2BackupKeyId,
                             }
                         )
                     ),
-                    per_stage=True,
                 ),
             ],
-            # The production database on the same 5433 cluster staging shares. The
-            # group role and role/database shapes mirror staging with `{stage}`
-            # rendering to `production`; grants live in the schema migrations the
-            # sweep applies on its first run. Idempotent: the group role already
-            # exists from staging provisioning and is left untouched.
-            db=Db(
-                port=5433,
-                group_role=Role(name="rosadmin_app"),
-                roles=[
-                    Role(
-                        name="rosadmin_{stage}_migrate",
-                        login=True,
-                        password=ServiceSecrets.DbMigrationPassword,
-                    ),
-                    Role(
-                        name="rosadmin_{stage}_app",
-                        login=True,
-                        member_of="rosadmin_app",
-                    ),
-                ],
-                databases=[
-                    db.Database(
-                        name="rosadmin_{stage}", owner="rosadmin_{stage}_migrate"
-                    )
-                ],
-            ),
         ),
     ],
 )
@@ -284,7 +268,7 @@ ROSADMIN = DeploySpec(
 FRONTEND = DeploySpec(
     root="rosadmin-frontend",
     package="rosadmin_deploy",
-    stages=frozenset({Stages.Staging}),
+    stages=frozenset(Stages),
     components=[
         # The static site needs no provisioned box material yet: its tree
         # ships through CI and its wrapper is installed with the other
@@ -297,7 +281,7 @@ FRONTEND = DeploySpec(
 INGRESS = DeploySpec(
     root="caddy",
     package="rosadmin_deploy",
-    stages=frozenset({Stages.Staging}),
+    stages=frozenset(Stages),
     components=[
         Component(
             name="ingress",

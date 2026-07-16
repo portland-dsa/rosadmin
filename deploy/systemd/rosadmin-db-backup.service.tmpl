@@ -1,0 +1,34 @@
+# Encrypted, write-once off-box backup of the production membership database.
+# Triggered by rosadmin-db-backup.timer; the work is in rosadmin-db-backup.py.
+# Install that script at /usr/local/sbin/rosadmin-db-backup (root, 0700).
+[Unit]
+Description=Encrypted off-box backup of the production membership database
+After=postgresql@18-rosadmin.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/rosadmin-db-backup
+
+# The Backblaze application KEY (secret) arrives as a systemd credential, never the
+# environment or this file. Delivered by the `backup` deploy component to
+# /etc/rosadmin/backup/production.
+LoadCredentialEncrypted=b2_backup_application_key:/etc/rosadmin/backup/production/b2_backup_application_key.cred
+
+# Non-secret config, rendered from the encrypted secrets. The keyID and bucket are not
+# secret on their own (the application key above is what authorizes writes); the age
+# recipient is a public key.
+Environment=BACKUP_AGE_RECIPIENT=${box_age_pubkey}
+Environment=B2_BUCKET=${b2_bucket_name}
+Environment=B2_KEY_ID=${b2_backup_key_id}
+
+# Modest hardening. NoNewPrivileges is intentionally NOT set: the script drops to the
+# postgres user (runuser) to run pg_dump over peer auth, which needs the setuid path.
+ProtectSystem=strict
+ReadWritePaths=/var/backups
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077

@@ -161,7 +161,9 @@ ROSADMIN = DeploySpec(
                     resource_loc="assets/rosadmin-shared.{stage}.env",
                     dest="/etc/rosadmin/service/{stage}/shared.env",
                     env=Environment(
-                        names=frozenset(ServiceEnv),
+                        names=frozenset(
+                            {ServiceEnv.GoogleDwdSubject, ServiceEnv.StMockPersonas}
+                        ),
                         # Production carries no mock persona map.
                         exclude={
                             Stages.Production: frozenset({ServiceEnv.StMockPersonas})

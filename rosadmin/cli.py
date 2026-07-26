@@ -42,6 +42,19 @@ def _listen_target(env: Mapping[str, str]) -> int | None:
     return 3
 
 
+class _RedactCallbackQuery(logging.Filter):
+    """Strip the query string from the SSO callback line in uvicorn's access log;
+    the OAuth code and state are single-use secrets that must not reach the journal."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3:
+            path = args[2]
+            if isinstance(path, str) and path.startswith("/api/auth/callback?"):
+                record.args = (*args[:2], "/api/auth/callback", *args[3:])
+        return True
+
+
 @app.command
 def serve(
     host: Annotated[
@@ -69,6 +82,7 @@ def serve(
             "running under systemd but no socket fd was inherited; "
             "refusing the TCP fallback (check LISTEN_PID/LISTEN_FDS delivery)"
         )
+    logging.getLogger("uvicorn.access").addFilter(_RedactCallbackQuery())
     # uvicorn's forwarded-header processing is left off on purpose. With
     # proxy_headers, uvicorn would overwrite request.client from a client-supplied
     # X-Forwarded-For - a value an attacker can rotate, which the rate limiter must

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import logging
 import os
 
 import pytest
 
-from rosadmin.cli import _listen_target, serve
+from rosadmin.cli import _listen_target, _RedactCallbackQuery, serve
 
 
 def test_no_systemd_environment_means_no_fd():
@@ -55,3 +56,42 @@ def test_explicit_uds_under_systemd_is_not_refused(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(kw))
     serve(uds="/tmp/dev.sock")
     assert seen.get("uds") == "/tmp/dev.sock"
+
+
+def _access_record(request_line: str) -> logging.LogRecord:
+    return logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("-", "GET", request_line, "1.1", 302),
+        None,
+    )
+
+
+def _logged_path(record: logging.LogRecord) -> object:
+    args = record.args
+    assert isinstance(args, tuple)
+    return args[2]
+
+
+def test_callback_query_string_is_redacted():
+    record = _access_record("/api/auth/callback?code=s3cret&state=xyz")
+    assert _RedactCallbackQuery().filter(record) is True
+    assert _logged_path(record) == "/api/auth/callback"
+    assert "s3cret" not in str(record.args)
+
+
+def test_non_callback_paths_pass_through_untouched():
+    record = _access_record("/api/me")
+    _RedactCallbackQuery().filter(record)
+    assert _logged_path(record) == "/api/me"
+
+
+def test_malformed_access_args_do_not_crash_the_filter():
+    # Spamton sends a record whose args never matched the access shape at all.
+    record = logging.LogRecord(
+        "uvicorn.access", logging.INFO, __file__, 0, "boom", None, None
+    )
+    assert _RedactCallbackQuery().filter(record) is True

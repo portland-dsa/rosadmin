@@ -67,5 +67,10 @@ async def _configure(conn: AsyncConnection) -> None:
 
 def make_pool(dsn: str) -> AsyncConnectionPool:
     """An unopened async pool that registers the `member_standing` and
-    `leadership_assessment` enums per connection."""
-    return AsyncConnectionPool(dsn, open=False, configure=_configure)
+    `leadership_assessment` enums per connection, checking each on checkout."""
+    return AsyncConnectionPool(
+        dsn,
+        open=False,
+        configure=_configure,
+        check=AsyncConnectionPool.check_connection,
+    )

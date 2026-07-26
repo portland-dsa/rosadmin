@@ -7,6 +7,8 @@ Wants=network-online.target
 # with it, and the socket surviving service restarts is what removes the
 # connection-refused window.
 Requires=rosadmin@%i.socket
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=notify
@@ -33,8 +35,6 @@ TimeoutStartSec=60
 WatchdogSec=30
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # --- sandbox (validate on the box: systemd-analyze security rosadmin@staging) -------
 NoNewPrivileges=true

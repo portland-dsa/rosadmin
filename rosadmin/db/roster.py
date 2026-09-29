@@ -41,14 +41,16 @@ from rosadmin.membership.source import Leadership, LeadershipAssessment, Member,
 
 _UPSERT_MEMBER = """
     INSERT INTO members
-        (st_id, first_name, last_name, email, alternate_email, discord_user_id,
-         standing, is_chapter_leader, leadership_assessment)
+        (st_id, first_name, last_name, alternate_name, email, alternate_email,
+         discord_user_id, standing, is_chapter_leader, leadership_assessment)
     VALUES
-        (%(st_id)s, %(first_name)s, %(last_name)s, %(email)s, %(alternate_email)s,
-         %(discord_id)s, %(standing)s, %(is_chapter_leader)s, %(assessment)s)
+        (%(st_id)s, %(first_name)s, %(last_name)s, %(alternate_name)s, %(email)s,
+         %(alternate_email)s, %(discord_id)s, %(standing)s, %(is_chapter_leader)s,
+         %(assessment)s)
     ON CONFLICT (st_id) DO UPDATE SET
         first_name = EXCLUDED.first_name,
         last_name = EXCLUDED.last_name,
+        alternate_name = EXCLUDED.alternate_name,
         email = EXCLUDED.email,
         alternate_email = EXCLUDED.alternate_email,
         discord_user_id = EXCLUDED.discord_user_id,
@@ -295,6 +297,7 @@ async def _upsert_one(
                 "st_id": member.st_id,
                 "first_name": member.first_name,
                 "last_name": member.last_name,
+                "alternate_name": member.alternate_name,
                 "email": member.email,
                 "alternate_email": member.alternate_email,
                 "discord_id": member.discord_id,

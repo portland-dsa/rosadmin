@@ -33,6 +33,7 @@ def _member(
     *,
     standing: Standing = Standing.GoodStanding,
     leads: frozenset[Leadership] = frozenset(),
+    alternate_name: str | None = None,
 ) -> Member:
     return Member(
         st_id=st_id,
@@ -42,7 +43,7 @@ def _member(
         discord_id=discord_id,
         first_name=None,
         last_name=None,
-        alternate_name=None,
+        alternate_name=alternate_name,
         is_chapter_leader=len(leads) > 0,
         leads=leads,
     )
@@ -185,3 +186,14 @@ async def test_pull_deletes_only_a_merge_duplicate_gone_from_the_roster(
     ]
     rows = _select(database, "SELECT st_id FROM members ORDER BY st_id")
     assert [st_id for (st_id,) in rows] == st_ids
+
+
+async def test_pull_stores_the_chosen_name(database) -> None:
+    # A chosen name overrides a possibly-legal first name everywhere a leader
+    # sees the member, so the pull must carry it into the row the panel reads.
+    await _pull(
+        database,
+        [_member(1, "kris@example.com", None, alternate_name="Kris")],
+        RecordingAuditSink(),
+    )
+    assert _select(database, "SELECT alternate_name FROM members") == [("Kris",)]

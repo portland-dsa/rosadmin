@@ -1,7 +1,9 @@
 """pytest's DB-layer fixtures, built on the shared `tests/support/pg.py` rig.
 
-An autouse truncation keeps each test isolated while the session-scoped
-container is reused for speed.
+An autouse truncation keeps each database test isolated while the
+session-scoped container is reused for speed. A test that never asks for
+`database` - the live Google test shares this folder - never starts the
+container either, so it runs on a machine with no working container runtime.
 """
 
 from __future__ import annotations
@@ -40,5 +42,6 @@ def database(rig: Rig) -> Db:
 
 
 @pytest.fixture(autouse=True)
-def _clean(rig: Rig) -> None:
-    rig.truncate()
+def _clean(request: pytest.FixtureRequest) -> None:
+    if "database" in request.fixturenames:
+        request.getfixturevalue("rig").truncate()

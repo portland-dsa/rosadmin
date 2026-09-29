@@ -3,15 +3,20 @@ leadership tables, and reconcile the leader rows to match.
 
 The whole pull is one `REPEATABLE READ` transaction, so an unexpected mid-pull
 failure rolls it all back and a retry is always safe. Each member is upserted
-under its own savepoint, though, so a single record clashing with another's
-unique email or Discord id is skipped and reported, not fatal. Solidarity Tech
-is read-only to this codebase, so the only store a pull can affect is this one.
+under its own savepoint, so a single record clashing with another's unique
+email or Discord id is skipped and reported, not fatal - unless the row it
+clashed with belongs to no one in this roster, which is what a Solidarity Tech
+account merge leaves behind (see `AccountMerge`). That row is folded into the
+survivor's and the upsert retried. Solidarity Tech is read-only to this
+codebase, so the only store a pull can affect is this one.
 A known accepted edge: a record that transiently fails decode client-side is
 just as invisible to the pull as a genuine absence, so it lapses the same way
-and self-restores on the next clean pull. A pull that would lapse an
-implausible share of the good-standing roster in one pass refuses the lapse
-outright instead of applying it - see `LAPSE_FUSE_FLOOR` and
-`LAPSE_FUSE_FRACTION`.
+and self-restores on the next clean pull - unless, in that same pull, another
+record claims its email or Discord id, in which case its row is folded into
+that record's as a merge duplicate. A pull that would lapse an implausible
+share of the good-standing roster in one pass refuses the lapse outright
+instead of applying it, and completes no account merges either - see
+`LAPSE_FUSE_FLOOR` and `LAPSE_FUSE_FRACTION`.
 
 There are two entry points that can call `pull_roster` (the CLI and the admin
 socket's pull route), and nothing outside this function serializes them. The
@@ -31,18 +36,21 @@ from uuid import UUID
 import psycopg
 from psycopg_pool import AsyncConnectionPool
 
+from rosadmin.db.audit import AuditSink, record_best_effort
 from rosadmin.membership.source import Leadership, LeadershipAssessment, Member, assess
 
 _UPSERT_MEMBER = """
     INSERT INTO members
-        (st_id, first_name, last_name, email, alternate_email, discord_user_id,
-         standing, is_chapter_leader, leadership_assessment)
+        (st_id, first_name, last_name, alternate_name, email, alternate_email,
+         discord_user_id, standing, is_chapter_leader, leadership_assessment)
     VALUES
-        (%(st_id)s, %(first_name)s, %(last_name)s, %(email)s, %(alternate_email)s,
-         %(discord_id)s, %(standing)s, %(is_chapter_leader)s, %(assessment)s)
+        (%(st_id)s, %(first_name)s, %(last_name)s, %(alternate_name)s, %(email)s,
+         %(alternate_email)s, %(discord_id)s, %(standing)s, %(is_chapter_leader)s,
+         %(assessment)s)
     ON CONFLICT (st_id) DO UPDATE SET
         first_name = EXCLUDED.first_name,
         last_name = EXCLUDED.last_name,
+        alternate_name = EXCLUDED.alternate_name,
         email = EXCLUDED.email,
         alternate_email = EXCLUDED.alternate_email,
         discord_user_id = EXCLUDED.discord_user_id,
@@ -67,6 +75,40 @@ _UPSERT_BODY = """
 _SELECT_BODY_ID = """
     SELECT id FROM leadership_bodies WHERE name = %(name)s AND body_type = %(body_type)s
 """
+
+#: The rows holding a member's email or Discord id whose own st_id is absent
+#: from this pull's roster - an account merge's duplicates. Absence from the
+#: roster is the test, not local standing: a member whose dues lapsed is still
+#: in the roster and still owns their row. A NULL Discord id matches nothing,
+#: so a member without one can only claim an email. Ordered, so which row a
+#: survivor takes over never depends on the plan Postgres picks.
+_SELECT_MERGE_DUPLICATES = """
+    SELECT id, st_id FROM members
+    WHERE (email = %(email)s OR discord_user_id = %(discord_id)s)
+      AND NOT (st_id = ANY(%(roster_st_ids)s::bigint[]))
+    ORDER BY st_id
+"""
+
+_SELECT_MEMBER_ID = "SELECT id FROM members WHERE st_id = %(st_id)s"
+
+_REKEY_MEMBER = "UPDATE members SET st_id = %(st_id)s WHERE id = %(id)s"
+
+#: Folding one member row into another, in the order that loses nothing: the
+#: manual adds move over first (a body the target already belongs to keeps the
+#: target's own row), then the adds the folded row made are re-attributed, and
+#: only then is it deleted. Its leader rows go with it - the records re-derive
+#: the survivor's own in the same pull.
+_CARRY_MANUAL_ADDS = """
+    INSERT INTO body_memberships (member_id, body_id, role, added_by, manually_added_at)
+    SELECT %(into_id)s, body_id, role, added_by, manually_added_at
+    FROM body_memberships
+    WHERE member_id = %(from_id)s AND role = 'member'
+    ON CONFLICT (member_id, body_id) DO NOTHING
+"""
+_CARRY_ATTRIBUTION = """
+    UPDATE body_memberships SET added_by = %(into_id)s WHERE added_by = %(from_id)s
+"""
+_DELETE_FOLDED_MEMBER = "DELETE FROM members WHERE id = %(from_id)s"
 
 #: The global leader reconcile: driven off parallel arrays through `unnest`
 #: rather than a literal `IN (...)`/`NOT IN (...)`, which is invalid SQL when
@@ -108,18 +150,17 @@ _DELETE_STALE_LEADER_ROWS = """
       )
 """
 
-#: Members present in the database but absent from this pull lost their
+#: Members in the database but absent from this pull's roster lost their
 #: records upstream - deleted, or moved out of the chapter - which is
 #: functionally a lapse: no access, and restored the same way if they
-#: return. Members this pull SKIPPED on a unique-constraint clash are
-#: excluded by st_id: they are present upstream, just unstorable, and a
-#: data bug must not cost them their standing.
+#: return. Keyed on the roster's st_ids rather than on what the pull managed
+#: to store, so a member skipped on a unique-constraint clash - present
+#: upstream, just unstorable - does not lose their standing to a data bug.
 _LAPSE_ABSENT_MEMBERS = """
     UPDATE members
     SET standing = 'lapsed'
     WHERE standing = 'good_standing'
-      AND NOT (id = ANY(%(present_member_ids)s::uuid[]))
-      AND NOT (st_id = ANY(%(skipped_st_ids)s::bigint[]))
+      AND NOT (st_id = ANY(%(roster_st_ids)s::bigint[]))
 """
 
 #: A pull that would lapse more than this many currently good-standing members -
@@ -127,7 +168,9 @@ _LAPSE_ABSENT_MEMBERS = """
 #: implausible mass absence. Genuine absences (a member deleted from or moved out
 #: of Solidarity Tech) are a trickle; a large one means the pull itself is broken
 #: (an empty or truncated upstream, a decoder-wide failure), so the lapse is
-#: refused rather than stripping standing from most of the roster. Mirrors the
+#: refused rather than stripping standing from most of the roster. The verdict is
+#: reached before the pull writes anything, and a pull too broken to trust with
+#: standing is not trusted to complete account merges either. Mirrors the
 #: reconcile sweep's removal fuse.
 LAPSE_FUSE_FLOOR = 5
 LAPSE_FUSE_FRACTION = 0.10
@@ -135,13 +178,16 @@ LAPSE_FUSE_FRACTION = 0.10
 _COUNT_LAPSE_CANDIDATES = """
     SELECT
         count(*) FILTER (
-            WHERE NOT (id = ANY(%(present_member_ids)s::uuid[]))
-              AND NOT (st_id = ANY(%(skipped_st_ids)s::bigint[]))
+            WHERE NOT (st_id = ANY(%(roster_st_ids)s::bigint[]))
         ) AS would_lapse,
         count(*) AS good_standing_total
     FROM members
     WHERE standing = 'good_standing'
 """
+
+#: The audit actor for the account merges a pull completes: a fixed system
+#: principal, pseudonymized like any other actor.
+PULL_ACTOR = "roster_pull"
 
 
 @dataclass(frozen=True)
@@ -153,14 +199,34 @@ class PullAnomaly:
 
 
 @dataclass(frozen=True)
+class AccountMerge:
+    """A Solidarity Tech account merge the pull completed locally.
+
+    Solidarity Tech resolves a duplicate account by deleting the duplicate's id
+    and moving its email or Discord id onto the survivor. Locally the
+    duplicate's row keeps holding that value, and the survivor's upsert collides
+    with it - the only sign of the merge this side ever sees. The duplicate's
+    row is folded into the survivor's rather than dropped, so its manual group
+    adds, and the attribution of adds it made, carry over (see
+    `_merge_duplicates`). `duplicate_member_id` is the row's id before the
+    merge; a survivor with no row of its own keeps using it.
+    """
+
+    survivor_st_id: int
+    duplicate_st_id: int
+    duplicate_member_id: UUID
+
+
+@dataclass(frozen=True)
 class PullReport:
-    """Counts from one roster pull, plus the members it flagged or skipped."""
+    """Counts from one roster pull, plus the members it flagged, skipped, or merged."""
 
     members_upserted: int
     bodies_upserted: int
     leader_rows: int
     anomalies: list[PullAnomaly]
     skipped_st_ids: list[int]
+    merges: list[AccountMerge]
     absent_lapsed: int
     lapse_refused: int
 
@@ -173,7 +239,13 @@ class PullReport:
 _PULL_ATTEMPTS = 3
 
 
-async def pull_roster(pool: AsyncConnectionPool, members: list[Member]) -> PullReport:
+async def pull_roster(
+    pool: AsyncConnectionPool,
+    members: list[Member],
+    *,
+    audit: AuditSink,
+    dry_run: bool = False,
+) -> PullReport:
     """Upsert `members` into Postgres and reconcile leader rows to match the roster.
 
     Each distinct `Leadership` is upserted once regardless of how many members
@@ -181,6 +253,11 @@ async def pull_roster(pool: AsyncConnectionPool, members: list[Member]) -> PullR
     then reconciled together in a single insert/delete, so a body a member
     stepped down from loses only that pair - a co-leader's row on the same body,
     or a member absent from this pull, is untouched.
+
+    Every account merge the pull completes is audited once the pull has
+    committed. A `dry_run` still upserts and lapses, which the next pull
+    re-states or restores, but holds back the one change no later pull
+    reverses: completing an account merge. The survivor is skipped instead.
 
     Concurrent pulls serialize on the advisory lock, but the lock statement
     itself pins the waiting transaction's snapshot before it blocks, so the
@@ -190,14 +267,25 @@ async def pull_roster(pool: AsyncConnectionPool, members: list[Member]) -> PullR
     """
     for attempt in range(1, _PULL_ATTEMPTS + 1):
         try:
-            return await _pull_once(pool, members)
+            report = await _pull_once(pool, members, dry_run=dry_run)
         except psycopg.errors.SerializationFailure:
             if attempt == _PULL_ATTEMPTS:
                 raise
+            continue
+        for merge in report.merges:
+            await record_best_effort(
+                audit,
+                "roster_account_merged",
+                actor=PULL_ACTOR,
+                subject=str(merge.duplicate_member_id),
+            )
+        return report
     raise AssertionError("unreachable: every loop path returns or raises")
 
 
-async def _pull_once(pool: AsyncConnectionPool, members: list[Member]) -> PullReport:
+async def _pull_once(
+    pool: AsyncConnectionPool, members: list[Member], *, dry_run: bool
+) -> PullReport:
     """One pull attempt: the whole-roster transaction `pull_roster` retries."""
     async with pool.connection() as conn:
         # Must be set while the connection is idle - a plain property
@@ -208,76 +296,208 @@ async def _pull_once(pool: AsyncConnectionPool, members: list[Member]) -> PullRe
         # borrower of this connection would silently run REPEATABLE READ.
         await conn.set_isolation_level(psycopg.IsolationLevel.REPEATABLE_READ)
         try:
-            return await _pull_in(conn, members)
+            return await _pull_in(conn, members, dry_run=dry_run)
         finally:
             await conn.set_isolation_level(None)
 
 
-async def _pull_in(conn: psycopg.AsyncConnection, members: list[Member]) -> PullReport:
+async def _upsert_one(
+    conn: psycopg.AsyncConnection,
+    member: Member,
+    body_ids: dict[Leadership, UUID],
+    pair_member_ids: list[UUID],
+    pair_body_ids: list[UUID],
+) -> tuple[UUID, LeadershipAssessment]:
+    """Upsert one member and its leadership pairs under a fresh savepoint.
+
+    Raises `psycopg.errors.UniqueViolation`, uncaught, on a colliding email or
+    Discord id, with this member's savepoint already rolled back.
+    """
+    async with conn.transaction():
+        assessment = assess(member.is_chapter_leader, member.leads)
+        cursor = await conn.execute(
+            _UPSERT_MEMBER,
+            {
+                "st_id": member.st_id,
+                "first_name": member.first_name,
+                "last_name": member.last_name,
+                "alternate_name": member.alternate_name,
+                "email": member.email,
+                "alternate_email": member.alternate_email,
+                "discord_id": member.discord_id,
+                "standing": member.standing,
+                "is_chapter_leader": member.is_chapter_leader,
+                "assessment": assessment,
+            },
+        )
+        row = await cursor.fetchone()
+        assert row is not None  # RETURNING on an upsert yields a row
+        member_id: UUID = row[0]
+        for leadership in member.leads:
+            body_id = body_ids.get(leadership)
+            if body_id is None:
+                body_params = {
+                    "name": leadership.name,
+                    "body_type": leadership.body_type.value,
+                }
+                body_cursor = await conn.execute(_UPSERT_BODY, body_params)
+                body_row = await body_cursor.fetchone()
+                if body_row is None:
+                    body_cursor = await conn.execute(_SELECT_BODY_ID, body_params)
+                    body_row = await body_cursor.fetchone()
+                assert body_row is not None  # inserted or already present
+                body_id = body_row[0]
+                body_ids[leadership] = body_id
+            pair_member_ids.append(member_id)
+            pair_body_ids.append(body_id)
+        return member_id, assessment
+
+
+@dataclass(frozen=True)
+class _Stored:
+    """One member the pull stored, and any merge duplicates deleted to store it."""
+
+    member_id: UUID
+    assessment: LeadershipAssessment
+    merges: tuple[AccountMerge, ...]
+
+
+async def _store_member(
+    conn: psycopg.AsyncConnection,
+    member: Member,
+    *,
+    roster_st_ids: list[int],
+    merge_duplicates: bool,
+    body_ids: dict[Leadership, UUID],
+    pair_member_ids: list[UUID],
+    pair_body_ids: list[UUID],
+) -> _Stored:
+    """`_upsert_one`, completing an account merge if a duplicate blocks it.
+
+    Raises `psycopg.errors.UniqueViolation` for a clash this must leave alone:
+    the value is held by a member still in `roster_st_ids`, which is bad data
+    rather than a merge, or `merge_duplicates` is off. Either way every row is
+    as it was before the call.
+    """
+    try:
+        member_id, assessment = await _upsert_one(
+            conn, member, body_ids, pair_member_ids, pair_body_ids
+        )
+        return _Stored(member_id, assessment, merges=())
+    except psycopg.errors.UniqueViolation:
+        if not merge_duplicates:
+            raise
+    # One savepoint around the merge and the retry: when the retry still
+    # collides - a member in the roster holds the other value - the merge
+    # rolls back with it, and the skip leaves every row untouched.
+    async with conn.transaction():
+        merges = await _merge_duplicates(conn, member, roster_st_ids)
+        member_id, assessment = await _upsert_one(
+            conn, member, body_ids, pair_member_ids, pair_body_ids
+        )
+    return _Stored(member_id, assessment, merges)
+
+
+async def _merge_duplicates(
+    conn: psycopg.AsyncConnection, member: Member, roster_st_ids: list[int]
+) -> tuple[AccountMerge, ...]:
+    """Fold every merge duplicate holding `member`'s email or Discord id into
+    the row `member` is about to be upserted onto.
+
+    A survivor with no row of its own takes over the first duplicate's,
+    re-keyed to the survivor's st_id, so that member id and everything attached
+    to it carry on untouched. Any other duplicate is folded into the survivor's
+    row (see `_CARRY_MANUAL_ADDS`). Changes nothing when no duplicate holds the
+    value, which leaves the retry to fail on the genuine clash.
+    """
+    cursor = await conn.execute(
+        _SELECT_MERGE_DUPLICATES,
+        {
+            "email": member.email,
+            "discord_id": member.discord_id,
+            "roster_st_ids": roster_st_ids,
+        },
+    )
+    duplicates = await cursor.fetchall()
+    if len(duplicates) == 0:
+        return ()
+    cursor = await conn.execute(_SELECT_MEMBER_ID, {"st_id": member.st_id})
+    survivor_row = await cursor.fetchone()
+    to_fold: list[UUID] = [duplicate_id for duplicate_id, _ in duplicates]
+    if survivor_row is None:
+        into_id = to_fold.pop(0)
+        await conn.execute(_REKEY_MEMBER, {"id": into_id, "st_id": member.st_id})
+    else:
+        into_id = survivor_row[0]
+    for from_id in to_fold:
+        fold = {"from_id": from_id, "into_id": into_id}
+        await conn.execute(_CARRY_MANUAL_ADDS, fold)
+        await conn.execute(_CARRY_ATTRIBUTION, fold)
+        await conn.execute(_DELETE_FOLDED_MEMBER, fold)
+    return tuple(
+        AccountMerge(
+            survivor_st_id=member.st_id,
+            duplicate_st_id=duplicate_st_id,
+            duplicate_member_id=duplicate_id,
+        )
+        for duplicate_id, duplicate_st_id in duplicates
+    )
+
+
+async def _pull_in(
+    conn: psycopg.AsyncConnection, members: list[Member], *, dry_run: bool
+) -> PullReport:
     """The pull's transaction body, on a connection already at REPEATABLE READ."""
+    roster_st_ids = [member.st_id for member in members]
     body_ids: dict[Leadership, UUID] = {}
     pair_member_ids: list[UUID] = []
     pair_body_ids: list[UUID] = []
     present_member_ids: list[UUID] = []
     anomalies: list[PullAnomaly] = []
     skipped_st_ids: list[int] = []
+    merges: list[AccountMerge] = []
 
     async with conn.transaction():
         # Serializes concurrent pulls: the second call blocks here until the
         # first's transaction ends, rather than interleaving under
         # REPEATABLE READ and risking a serialization failure.
         await conn.execute("SELECT pg_advisory_xact_lock(%s)", (_PULL_LOCK_KEY,))
+
+        lapse_params = {"roster_st_ids": roster_st_ids}
+        count_cursor = await conn.execute(_COUNT_LAPSE_CANDIDATES, lapse_params)
+        count_row = await count_cursor.fetchone()
+        assert count_row is not None
+        would_lapse, good_standing_total = count_row
+        budget = max(
+            LAPSE_FUSE_FLOOR, math.ceil(good_standing_total * LAPSE_FUSE_FRACTION)
+        )
+        fuse_tripped = would_lapse > budget
+
         for member in members:
             try:
-                # A savepoint per member: a unique-constraint clash rolls back
-                # this member alone, not every good member before it.
-                async with conn.transaction():
-                    assessment = assess(member.is_chapter_leader, member.leads)
-                    cursor = await conn.execute(
-                        _UPSERT_MEMBER,
-                        {
-                            "st_id": member.st_id,
-                            "first_name": member.first_name,
-                            "last_name": member.last_name,
-                            "email": member.email,
-                            "alternate_email": member.alternate_email,
-                            "discord_id": member.discord_id,
-                            "standing": member.standing,
-                            "is_chapter_leader": member.is_chapter_leader,
-                            "assessment": assessment,
-                        },
-                    )
-                    row = await cursor.fetchone()
-                    assert row is not None  # RETURNING on an upsert yields a row
-                    member_id: UUID = row[0]
-                    for leadership in member.leads:
-                        body_id = body_ids.get(leadership)
-                        if body_id is None:
-                            body_params = {
-                                "name": leadership.name,
-                                "body_type": leadership.body_type.value,
-                            }
-                            body_cursor = await conn.execute(_UPSERT_BODY, body_params)
-                            body_row = await body_cursor.fetchone()
-                            if body_row is None:
-                                body_cursor = await conn.execute(
-                                    _SELECT_BODY_ID, body_params
-                                )
-                                body_row = await body_cursor.fetchone()
-                            assert body_row is not None  # inserted or already present
-                            body_id = body_row[0]
-                            body_ids[leadership] = body_id
-                        pair_member_ids.append(member_id)
-                        pair_body_ids.append(body_id)
-                    present_member_ids.append(member_id)
-                    if assessment.is_anomalous:
-                        anomalies.append(
-                            PullAnomaly(member_id=member_id, assessment=assessment)
-                        )
+                stored = await _store_member(
+                    conn,
+                    member,
+                    roster_st_ids=roster_st_ids,
+                    merge_duplicates=not (dry_run or fuse_tripped),
+                    body_ids=body_ids,
+                    pair_member_ids=pair_member_ids,
+                    pair_body_ids=pair_body_ids,
+                )
             except psycopg.errors.UniqueViolation:
-                # A duplicate email or Discord id against another member: skip
-                # this one and report it, rather than aborting every good member.
+                # A duplicate email or Discord id this pull must not resolve:
+                # skip this one and report it, rather than aborting every good
+                # member before it.
                 skipped_st_ids.append(member.st_id)
+                continue
+            merges.extend(stored.merges)
+            present_member_ids.append(stored.member_id)
+            if stored.assessment.is_anomalous:
+                anomalies.append(
+                    PullAnomaly(
+                        member_id=stored.member_id, assessment=stored.assessment
+                    )
+                )
 
         reconcile_params = {
             "member_ids": pair_member_ids,
@@ -287,18 +507,7 @@ async def _pull_in(conn: psycopg.AsyncConnection, members: list[Member]) -> Pull
         await conn.execute(_INSERT_LEADER_ROWS, reconcile_params)
         await conn.execute(_DELETE_STALE_LEADER_ROWS, reconcile_params)
 
-        lapse_params = {
-            "present_member_ids": present_member_ids,
-            "skipped_st_ids": skipped_st_ids,
-        }
-        count_cursor = await conn.execute(_COUNT_LAPSE_CANDIDATES, lapse_params)
-        count_row = await count_cursor.fetchone()
-        assert count_row is not None
-        would_lapse, good_standing_total = count_row
-        budget = max(
-            LAPSE_FUSE_FLOOR, math.ceil(good_standing_total * LAPSE_FUSE_FRACTION)
-        )
-        if would_lapse > budget:
+        if fuse_tripped:
             # An implausible mass absence: refuse the lapse and report it so the
             # caller stops and is seen, rather than stripping standing wholesale.
             absent_lapsed = 0
@@ -314,6 +523,7 @@ async def _pull_in(conn: psycopg.AsyncConnection, members: list[Member]) -> Pull
         leader_rows=len(pair_member_ids),
         anomalies=anomalies,
         skipped_st_ids=skipped_st_ids,
+        merges=merges,
         absent_lapsed=absent_lapsed,
         lapse_refused=lapse_refused,
     )

@@ -569,7 +569,7 @@ async def _sweep_locked(
     pull: PullReport | None = None
     if source is not None:
         members = await source.list_members()
-        pull = await pull_roster(pool, members)
+        pull = await pull_roster(pool, members, audit=audit, dry_run=dry_run)
         if pull.lapse_refused > 0:
             raise RosterPullUnsafe(pull.lapse_refused)
     provision_report: ProvisionReport | None = None

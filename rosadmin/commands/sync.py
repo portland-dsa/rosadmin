@@ -8,6 +8,7 @@ from typing import Annotated
 
 from cyclopts import App, Parameter
 
+from rosadmin.commands.roster import warn_pull_findings
 from rosadmin.db import dsn_from_env, make_pool
 from rosadmin.db.audit import PostgresAuditSink, audit_key_from_env
 from rosadmin.group_sync import (
@@ -19,7 +20,7 @@ from rosadmin.group_sync import (
     provisioner_from_env,
 )
 from rosadmin.membership.solidarity_tech.client import SolidarityTechClient
-from rosadmin.membership.source import ANOMALY_WARNING, Email
+from rosadmin.membership.source import Email
 from rosadmin.reconcile import (
     ProvisionConfig,
     RosterPullUnsafe,
@@ -67,8 +68,9 @@ async def sync_run(
         bool,
         Parameter(
             help="Rehearse the Google sync: real reads, the real diff, no Google "
-            "writes. The roster pull still runs and writes the database - add "
-            "--skip-pull to reconcile against the database as it stands."
+            "writes. The roster pull still runs and writes the database, short "
+            "of completing an account merge - add --skip-pull to reconcile "
+            "against the database as it stands."
         ),
     ] = False,
     skip_pull: Annotated[
@@ -133,13 +135,13 @@ async def sync_run(
 
 def _report(report: SweepReport, *, dry_run: bool) -> None:
     if report.pull is not None:
-        for anomaly in report.pull.anomalies:
-            logger.warning(ANOMALY_WARNING, anomaly.member_id, anomaly.assessment.value)
+        warn_pull_findings(report.pull)
         logger.info(
-            "pull: %d members, %d absent lapsed, %d skipped",
+            "pull: %d members, %d absent lapsed, %d skipped, %d account merges",
             report.pull.members_upserted,
             report.pull.absent_lapsed,
             len(report.pull.skipped_st_ids),
+            len(report.pull.merges),
         )
     if report.provision is not None:
         p = report.provision

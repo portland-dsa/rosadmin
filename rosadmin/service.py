@@ -108,7 +108,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
 
     mock_st = await _start_mock_st(os.environ) if pool is not None else None
-    admin = await _start_admin(pool, os.environ) if pool is not None else None
+    admin = (
+        await _start_admin(pool, app.state.audit_sink, os.environ)
+        if pool is not None
+        else None
+    )
 
     systemd_notify.notify_ready()
 
@@ -207,7 +211,7 @@ async def _start_mock_st(
 
 
 async def _start_admin(
-    pool: AsyncConnectionPool, env: Mapping[str, str]
+    pool: AsyncConnectionPool, audit: AuditSink, env: Mapping[str, str]
 ) -> tuple[Any, asyncio.Task[None]] | None:
     """Serve the admin app on its own uvicorn.Server task when the double gate
     passes, else `None`. Split out of the lifespan so the gating is unit-testable
@@ -219,7 +223,9 @@ async def _start_admin(
 
     from rosadmin_admintools import create_admin_app
 
-    admin_app = create_admin_app(pool, mock_control_base=_mock_control_base(env))
+    admin_app = create_admin_app(
+        pool, audit=audit, mock_control_base=_mock_control_base(env)
+    )
     server = uvicorn.Server(uvicorn.Config(admin_app, uds=env["ROSADMIN_ADMIN_SOCKET"]))
     task = asyncio.create_task(server.serve())
     task.add_done_callback(_log_aux_task_failure)

@@ -76,7 +76,7 @@ uv run pytest
 uv run behave
 ```
 
-Add the `--tags live` if you have a key and want to run any tests that hit an actual server somewhere. The pre-push commit hooks run the live tests, you can push with `--no-verify` if you haven't been given them.
+Add the `--tags live` if you have a key and want to run any tests that hit an actual server somewhere. The pre-push hook runs the live behave scenarios when a Solidarity Tech token is set and skips them otherwise; you can push with `--no-verify` to skip it outright.
 
 Note: to test anything significant you'll need a DWD-enabled service account key for some sort of (ideally) isolated staging workspace account hierarchy.
 

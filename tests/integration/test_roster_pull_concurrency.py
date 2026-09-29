@@ -16,6 +16,7 @@ import psycopg
 import pytest
 
 from rosadmin.db import make_pool
+from rosadmin.db.audit import RecordingAuditSink
 from rosadmin.db.roster import pull_roster
 from rosadmin.membership.source import BodyType, Email, Leadership, Member, Standing
 from tests.support.pg import one_row
@@ -57,7 +58,8 @@ async def test_concurrent_pulls_serialize_instead_of_failing(database) -> None:
     await pool_b.open()
     try:
         report_a, report_b = await asyncio.gather(
-            pull_roster(pool_a, _MEMBERS), pull_roster(pool_b, _MEMBERS)
+            pull_roster(pool_a, _MEMBERS, audit=RecordingAuditSink()),
+            pull_roster(pool_b, _MEMBERS, audit=RecordingAuditSink()),
         )
     finally:
         await pool_a.close()

@@ -17,6 +17,7 @@ import uvicorn
 from behave import given, then, when
 
 from rosadmin.db import make_pool
+from rosadmin.db.audit import RecordingAuditSink
 from rosadmin.membership.source import Standing
 from rosadmin.mock_st.roster import parse_map
 from rosadmin.mock_st.server import create_app as create_mock_app
@@ -61,7 +62,9 @@ def _admin_call(context, method: str, path: str, **kwargs):
         await pool.open()
         try:
             app = create_admin_app(
-                pool, mock_control_base=getattr(context, "mock_base", None)
+                pool,
+                audit=RecordingAuditSink(),
+                mock_control_base=getattr(context, "mock_base", None),
             )
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(transport=transport, base_url=BASE) as client:

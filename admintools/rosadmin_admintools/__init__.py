@@ -25,6 +25,7 @@ from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel
 
 from rosadmin.commands.roster import run_pull
+from rosadmin.db.audit import AuditSink
 from rosadmin.db.directory import LinkTaken, set_body_link
 from rosadmin.membership.solidarity_tech.client import SolidarityTechClient
 
@@ -43,11 +44,15 @@ class _Link(BaseModel):
 
 
 def create_admin_app(
-    pool: AsyncConnectionPool, *, mock_control_base: str | None = None
+    pool: AsyncConnectionPool,
+    *,
+    audit: AuditSink,
+    mock_control_base: str | None = None,
 ) -> FastAPI:
     """Build the admin app over an already-open `pool`.
 
-    The persona relay routes (`/admin/personas/*`) are mounted only when
+    `audit` records the merge duplicates a triggered pull deletes. The persona
+    relay routes (`/admin/personas/*`) are mounted only when
     `mock_control_base` is truthy - absence (`None` or an empty string), not a
     403, when the configured membership source is the real Solidarity Tech
     API, since there is no mock to relay to.
@@ -76,7 +81,7 @@ def create_admin_app(
     async def pull() -> dict[str, object]:
         source = SolidarityTechClient.from_env(os.environ)
         try:
-            report = await run_pull(pool, source)
+            report = await run_pull(pool, source, audit)
         finally:
             await source.aclose()
         return {
@@ -85,7 +90,13 @@ def create_admin_app(
             "leader_rows": report.leader_rows,
             "anomalies": len(report.anomalies),
             "skipped_st_ids": report.skipped_st_ids,
-            "merged_st_ids": report.merged_st_ids,
+            "merges": [
+                {
+                    "survivor_st_id": merge.survivor_st_id,
+                    "duplicate_st_id": merge.duplicate_st_id,
+                }
+                for merge in report.merges
+            ],
             "absent_lapsed": report.absent_lapsed,
             "lapse_refused": report.lapse_refused,
         }

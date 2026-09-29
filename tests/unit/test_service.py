@@ -88,13 +88,13 @@ async def test_admin_socket_unset_starts_no_admin_task():
     # rosadmin-admintools is installed in this dev environment, so the only gate
     # that can fail here is the env var - confirming the "package absent" half
     # needs the separate monkeypatched case below.
-    assert await _start_admin(_NO_POOL, {}) is None
+    assert await _start_admin(_NO_POOL, RecordingAuditSink(), {}) is None
 
 
 async def test_admin_package_absent_starts_no_admin_task(monkeypatch):
     monkeypatch.setattr(service.importlib.util, "find_spec", lambda name: None)
     env = {"ROSADMIN_ADMIN_SOCKET": "/tmp/rosadmin-admin.sock"}
-    assert await _start_admin(_NO_POOL, env) is None
+    assert await _start_admin(_NO_POOL, RecordingAuditSink(), env) is None
 
 
 async def test_mock_st_unset_starts_no_mock_server():

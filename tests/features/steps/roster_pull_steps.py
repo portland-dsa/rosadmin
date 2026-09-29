@@ -11,6 +11,7 @@ import psycopg
 from behave import given, then, when
 
 from rosadmin.db import make_pool
+from rosadmin.db.audit import RecordingAuditSink
 from rosadmin.db.mutations import claim_and_add_member
 from rosadmin.db.roster import PullReport, pull_roster
 from rosadmin.membership.solidarity_tech.client import SolidarityTechClient
@@ -39,7 +40,7 @@ def _pull(app_dsn, members) -> PullReport:
         pool = make_pool(app_dsn)
         await pool.open()
         try:
-            return await pull_roster(pool, members)
+            return await pull_roster(pool, members, audit=RecordingAuditSink())
         finally:
             await pool.close()
 
@@ -194,9 +195,10 @@ def step_manual_add(context, email, body):
 
 @when('Susie deletes "{email}"\'s member record outright')
 def step_delete_member(context, email):
-    # No pull path deletes a member row today; this is a direct DELETE, standing
-    # in for a future deprovision sweep, to pin what a manual add's attribution
-    # does when the adding leader's own record disappears.
+    # The pull deletes a member row only to complete an account merge; this is a
+    # direct DELETE, standing in for a future deprovision sweep, to pin what a
+    # manual add's attribution does when the adding leader's own record
+    # disappears.
     with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
         conn.execute("DELETE FROM members WHERE email = %s", (email,))
 

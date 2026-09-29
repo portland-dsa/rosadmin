@@ -53,8 +53,8 @@ jobs:
             - name: Pytest (unit)
               # The integration suite runs in the sibling "Integration" job, which
               # has a container runtime. The credentials suite never runs in CI
-              # at all - CI holds no Google key on purpose; that suite is run
-              # locally by the pre-push hook when a real key is present.
+              # at all - CI holds no Google key on purpose; it is a by-hand check
+              # that a tenant's key and delegation work.
               run: uv run pytest -m "not integration and not credentials"
 
             - name: gitleaks

@@ -3,9 +3,12 @@ leadership tables, and reconcile the leader rows to match.
 
 The whole pull is one `REPEATABLE READ` transaction, so an unexpected mid-pull
 failure rolls it all back and a retry is always safe. Each member is upserted
-under its own savepoint, though, so a single record clashing with another's
-unique email or Discord id is skipped and reported, not fatal. Solidarity Tech
-is read-only to this codebase, so the only store a pull can affect is this one.
+under its own savepoint, so a single record clashing with another's unique
+email or Discord id is skipped and reported, not fatal - unless the row it
+clashed with is a stale, lapsed leftover of a Solidarity Tech account merge, in
+which case the merge is completed locally: the stale row is cleared and the
+upsert retried. Solidarity Tech is read-only to this codebase, so the only
+store a pull can affect is this one.
 A known accepted edge: a record that transiently fails decode client-side is
 just as invisible to the pull as a genuine absence, so it lapses the same way
 and self-restores on the next clean pull. A pull that would lapse an
@@ -31,7 +34,13 @@ from uuid import UUID
 import psycopg
 from psycopg_pool import AsyncConnectionPool
 
-from rosadmin.membership.source import Leadership, LeadershipAssessment, Member, assess
+from rosadmin.membership.source import (
+    Leadership,
+    LeadershipAssessment,
+    Member,
+    Standing,
+    assess,
+)
 
 _UPSERT_MEMBER = """
     INSERT INTO members
@@ -67,6 +76,25 @@ _UPSERT_BODY = """
 _SELECT_BODY_ID = """
     SELECT id FROM leadership_bodies WHERE name = %(name)s AND body_type = %(body_type)s
 """
+
+#: The default names Postgres gives the `members.email` and
+#: `members.discord_user_id` UNIQUE constraints - what a `UniqueViolation`'s
+#: diagnostics carry, and how `_clear_stale_merge_donor` tells the two apart.
+_EMAIL_UNIQUE_CONSTRAINT = "members_email_key"
+_DISCORD_UNIQUE_CONSTRAINT = "members_discord_user_id_key"
+
+_SELECT_EMAIL_HOLDER = """
+    SELECT id, standing FROM members WHERE email = %(value)s AND st_id != %(st_id)s
+"""
+_SELECT_DISCORD_HOLDER = """
+    SELECT id, standing FROM members
+    WHERE discord_user_id = %(value)s AND st_id != %(st_id)s
+"""
+_DELETE_MEMBER = "DELETE FROM members WHERE id = %(id)s"
+
+#: The non-`st_id` UNIQUE columns a merge donor can be cleared on - the retry
+#: bound in `_upsert_with_merge_retry`: at most one clear per column.
+_MAX_MERGE_RETRIES = 2
 
 #: The global leader reconcile: driven off parallel arrays through `unnest`
 #: rather than a literal `IN (...)`/`NOT IN (...)`, which is invalid SQL when
@@ -154,13 +182,14 @@ class PullAnomaly:
 
 @dataclass(frozen=True)
 class PullReport:
-    """Counts from one roster pull, plus the members it flagged or skipped."""
+    """Counts from one roster pull, plus the members it flagged, skipped, or merged."""
 
     members_upserted: int
     bodies_upserted: int
     leader_rows: int
     anomalies: list[PullAnomaly]
     skipped_st_ids: list[int]
+    merged_st_ids: list[int]
     absent_lapsed: int
     lapse_refused: int
 
@@ -213,6 +242,120 @@ async def _pull_once(pool: AsyncConnectionPool, members: list[Member]) -> PullRe
             await conn.set_isolation_level(None)
 
 
+async def _upsert_one(
+    conn: psycopg.AsyncConnection,
+    member: Member,
+    body_ids: dict[Leadership, UUID],
+    pair_member_ids: list[UUID],
+    pair_body_ids: list[UUID],
+) -> tuple[UUID, LeadershipAssessment]:
+    """Upsert one member and its leadership pairs under a fresh savepoint.
+
+    Raises `psycopg.errors.UniqueViolation`, uncaught, on a colliding email or
+    Discord id - the caller decides whether that is a stale merge donor worth
+    clearing and retrying, or a genuine clash to skip and report.
+    """
+    async with conn.transaction():
+        assessment = assess(member.is_chapter_leader, member.leads)
+        cursor = await conn.execute(
+            _UPSERT_MEMBER,
+            {
+                "st_id": member.st_id,
+                "first_name": member.first_name,
+                "last_name": member.last_name,
+                "email": member.email,
+                "alternate_email": member.alternate_email,
+                "discord_id": member.discord_id,
+                "standing": member.standing,
+                "is_chapter_leader": member.is_chapter_leader,
+                "assessment": assessment,
+            },
+        )
+        row = await cursor.fetchone()
+        assert row is not None  # RETURNING on an upsert yields a row
+        member_id: UUID = row[0]
+        for leadership in member.leads:
+            body_id = body_ids.get(leadership)
+            if body_id is None:
+                body_params = {
+                    "name": leadership.name,
+                    "body_type": leadership.body_type.value,
+                }
+                body_cursor = await conn.execute(_UPSERT_BODY, body_params)
+                body_row = await body_cursor.fetchone()
+                if body_row is None:
+                    body_cursor = await conn.execute(_SELECT_BODY_ID, body_params)
+                    body_row = await body_cursor.fetchone()
+                assert body_row is not None  # inserted or already present
+                body_id = body_row[0]
+                body_ids[leadership] = body_id
+            pair_member_ids.append(member_id)
+            pair_body_ids.append(body_id)
+        return member_id, assessment
+
+
+async def _clear_stale_merge_donor(
+    conn: psycopg.AsyncConnection,
+    member: Member,
+    violation: psycopg.errors.UniqueViolation,
+) -> bool:
+    """Delete the lapsed row holding the email or Discord id `member` now carries.
+
+    Solidarity Tech resolves a duplicate account by deleting the duplicate's id
+    and folding its identity onto the survivor. Locally, the duplicate's own row
+    only lapses on that pull, same as any other absence, and keeps holding the
+    value until the survivor's own upsert collides with it - which is the only
+    signal this side ever gets that a merge happened. Returns False, leaving
+    every row untouched, for anything else: a live holder is a genuine,
+    unresolved clash between two currently-present members and must not be
+    silently overwritten, and a constraint this doesn't recognize is left for
+    the ordinary skip-and-report path.
+    """
+    constraint = violation.diag.constraint_name
+    if constraint == _EMAIL_UNIQUE_CONSTRAINT:
+        query, value = _SELECT_EMAIL_HOLDER, member.email
+    elif constraint == _DISCORD_UNIQUE_CONSTRAINT:
+        query, value = _SELECT_DISCORD_HOLDER, member.discord_id
+    else:
+        return False
+    cursor = await conn.execute(query, {"value": value, "st_id": member.st_id})
+    row = await cursor.fetchone()
+    if row is None or row[1] is not Standing.Lapsed:
+        return False
+    await conn.execute(_DELETE_MEMBER, {"id": row[0]})
+    return True
+
+
+async def _upsert_with_merge_retry(
+    conn: psycopg.AsyncConnection,
+    member: Member,
+    body_ids: dict[Leadership, UUID],
+    pair_member_ids: list[UUID],
+    pair_body_ids: list[UUID],
+) -> tuple[UUID, LeadershipAssessment, bool] | None:
+    """`_upsert_one`, clearing at most one stale email donor and one stale
+    Discord-id donor before giving up.
+
+    The bool is whether a donor was cleared to get there (false on the
+    ordinary, no-collision path). `None` is a skip: the collision survived
+    every clear attempt, so it is a genuine clash, not a merge.
+    """
+    cleared = False
+    for attempt in range(_MAX_MERGE_RETRIES + 1):
+        try:
+            member_id, assessment = await _upsert_one(
+                conn, member, body_ids, pair_member_ids, pair_body_ids
+            )
+            return member_id, assessment, cleared
+        except psycopg.errors.UniqueViolation as violation:
+            if attempt == _MAX_MERGE_RETRIES or not await _clear_stale_merge_donor(
+                conn, member, violation
+            ):
+                return None
+            cleared = True
+    return None  # unreachable: the loop always returns
+
+
 async def _pull_in(conn: psycopg.AsyncConnection, members: list[Member]) -> PullReport:
     """The pull's transaction body, on a connection already at REPEATABLE READ."""
     body_ids: dict[Leadership, UUID] = {}
@@ -221,6 +364,7 @@ async def _pull_in(conn: psycopg.AsyncConnection, members: list[Member]) -> Pull
     present_member_ids: list[UUID] = []
     anomalies: list[PullAnomaly] = []
     skipped_st_ids: list[int] = []
+    merged_st_ids: list[int] = []
 
     async with conn.transaction():
         # Serializes concurrent pulls: the second call blocks here until the
@@ -228,56 +372,23 @@ async def _pull_in(conn: psycopg.AsyncConnection, members: list[Member]) -> Pull
         # REPEATABLE READ and risking a serialization failure.
         await conn.execute("SELECT pg_advisory_xact_lock(%s)", (_PULL_LOCK_KEY,))
         for member in members:
-            try:
-                # A savepoint per member: a unique-constraint clash rolls back
-                # this member alone, not every good member before it.
-                async with conn.transaction():
-                    assessment = assess(member.is_chapter_leader, member.leads)
-                    cursor = await conn.execute(
-                        _UPSERT_MEMBER,
-                        {
-                            "st_id": member.st_id,
-                            "first_name": member.first_name,
-                            "last_name": member.last_name,
-                            "email": member.email,
-                            "alternate_email": member.alternate_email,
-                            "discord_id": member.discord_id,
-                            "standing": member.standing,
-                            "is_chapter_leader": member.is_chapter_leader,
-                            "assessment": assessment,
-                        },
-                    )
-                    row = await cursor.fetchone()
-                    assert row is not None  # RETURNING on an upsert yields a row
-                    member_id: UUID = row[0]
-                    for leadership in member.leads:
-                        body_id = body_ids.get(leadership)
-                        if body_id is None:
-                            body_params = {
-                                "name": leadership.name,
-                                "body_type": leadership.body_type.value,
-                            }
-                            body_cursor = await conn.execute(_UPSERT_BODY, body_params)
-                            body_row = await body_cursor.fetchone()
-                            if body_row is None:
-                                body_cursor = await conn.execute(
-                                    _SELECT_BODY_ID, body_params
-                                )
-                                body_row = await body_cursor.fetchone()
-                            assert body_row is not None  # inserted or already present
-                            body_id = body_row[0]
-                            body_ids[leadership] = body_id
-                        pair_member_ids.append(member_id)
-                        pair_body_ids.append(body_id)
-                    present_member_ids.append(member_id)
-                    if assessment.is_anomalous:
-                        anomalies.append(
-                            PullAnomaly(member_id=member_id, assessment=assessment)
-                        )
-            except psycopg.errors.UniqueViolation:
-                # A duplicate email or Discord id against another member: skip
-                # this one and report it, rather than aborting every good member.
+            result = await _upsert_with_merge_retry(
+                conn, member, body_ids, pair_member_ids, pair_body_ids
+            )
+            if result is None:
+                # A duplicate email or Discord id against another live member:
+                # skip this one and report it, rather than aborting every good
+                # member before it.
                 skipped_st_ids.append(member.st_id)
+                continue
+            member_id, assessment, cleared = result
+            if cleared:
+                merged_st_ids.append(member.st_id)
+            present_member_ids.append(member_id)
+            if assessment.is_anomalous:
+                anomalies.append(
+                    PullAnomaly(member_id=member_id, assessment=assessment)
+                )
 
         reconcile_params = {
             "member_ids": pair_member_ids,
@@ -314,6 +425,7 @@ async def _pull_in(conn: psycopg.AsyncConnection, members: list[Member]) -> Pull
         leader_rows=len(pair_member_ids),
         anomalies=anomalies,
         skipped_st_ids=skipped_st_ids,
+        merged_st_ids=merged_st_ids,
         absent_lapsed=absent_lapsed,
         lapse_refused=lapse_refused,
     )

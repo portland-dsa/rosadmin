@@ -136,10 +136,11 @@ def _report(report: SweepReport, *, dry_run: bool) -> None:
         for anomaly in report.pull.anomalies:
             logger.warning(ANOMALY_WARNING, anomaly.member_id, anomaly.assessment.value)
         logger.info(
-            "pull: %d members, %d absent lapsed, %d skipped",
+            "pull: %d members, %d absent lapsed, %d skipped, %d merged",
             report.pull.members_upserted,
             report.pull.absent_lapsed,
             len(report.pull.skipped_st_ids),
+            len(report.pull.merged_st_ids),
         )
     if report.provision is not None:
         p = report.provision

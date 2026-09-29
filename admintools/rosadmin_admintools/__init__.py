@@ -85,6 +85,7 @@ def create_admin_app(
             "leader_rows": report.leader_rows,
             "anomalies": len(report.anomalies),
             "skipped_st_ids": report.skipped_st_ids,
+            "merged_st_ids": report.merged_st_ids,
             "absent_lapsed": report.absent_lapsed,
             "lapse_refused": report.lapse_refused,
         }

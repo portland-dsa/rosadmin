@@ -59,14 +59,23 @@ async def roster_pull() -> None:
             report.skipped_st_ids,
         )
 
+    if report.merged_st_ids:
+        logger.warning(
+            "resolved %d member(s) reclaiming a stale duplicate freed by a "
+            "Solidarity Tech account merge (Solidarity Tech ids %s)",
+            len(report.merged_st_ids),
+            report.merged_st_ids,
+        )
+
     logger.info(
         "roster pull complete: %d members, %d bodies, %d leader rows, "
-        "%d anomalies, %d skipped, %d absent members lapsed, %d lapse refused",
+        "%d anomalies, %d skipped, %d merged, %d absent members lapsed, %d lapse refused",
         report.members_upserted,
         report.bodies_upserted,
         report.leader_rows,
         len(report.anomalies),
         len(report.skipped_st_ids),
+        len(report.merged_st_ids),
         report.absent_lapsed,
         report.lapse_refused,
     )

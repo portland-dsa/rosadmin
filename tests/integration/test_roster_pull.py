@@ -3,10 +3,11 @@
 A Solidarity Tech account merge deletes the duplicate id upstream and moves its
 email, Discord id, or both onto the survivor. Locally the duplicate's row still
 holds the value, so the survivor's upsert collides with it. The pull completes
-the merge - deletes the duplicate row, audits it, stores the survivor - but only
-for a row whose st_id is gone from the roster. A clash with a member still in
-the roster is bad data, not a merge, and is skipped and reported with both rows
-untouched; so is a merge on a dry run, or on a pull the lapse fuse distrusts.
+the merge - folds the duplicate row into the survivor's, keeping its manual
+group adds and their attribution, and audits it - but only for a row whose
+st_id is gone from the roster. A clash with a member still in the roster is bad
+data, not a merge, and is skipped and reported with both rows untouched; so is
+a merge on a dry run, or on a pull the lapse fuse distrusts.
 """
 
 from __future__ import annotations
@@ -70,6 +71,20 @@ async def _pull(
 def _select(database, query: LiteralString) -> list[tuple]:
     with psycopg.connect(database.superuser_dsn) as conn:
         return conn.execute(query).fetchall()
+
+
+def _seed_manual_adds(database, adds: list[tuple[int, int]]) -> None:
+    """Manually add each `(member st_id, adder st_id)` pair to the one body."""
+    with psycopg.connect(database.superuser_dsn, autocommit=True) as conn:
+        for member_st_id, adder_st_id in adds:
+            conn.execute(
+                "INSERT INTO body_memberships"
+                " (member_id, body_id, role, added_by, manually_added_at)"
+                " SELECT m.id, b.id, 'member', adder.id, now()"
+                " FROM members m, members adder, leadership_bodies b"
+                " WHERE m.st_id = %s AND adder.st_id = %s",
+                (member_st_id, adder_st_id),
+            )
 
 
 @pytest.mark.parametrize(
@@ -170,7 +185,7 @@ def _select(database, query: LiteralString) -> list[tuple]:
         ),
     ],
 )
-async def test_pull_deletes_only_a_merge_duplicate_gone_from_the_roster(
+async def test_pull_merges_only_a_duplicate_gone_from_the_roster(
     database, before, roster, dry_run, merges, skipped, st_ids
 ) -> None:
     await _pull(database, before, RecordingAuditSink())
@@ -182,10 +197,71 @@ async def test_pull_deletes_only_a_merge_duplicate_gone_from_the_roster(
     )
     assert report.skipped_st_ids == skipped
     assert [(r.action, r.subject) for r in audit.records] == [
-        ("roster_duplicate_deleted", str(m.duplicate_member_id)) for m in report.merges
+        ("roster_account_merged", str(m.duplicate_member_id)) for m in report.merges
     ]
     rows = _select(database, "SELECT st_id FROM members ORDER BY st_id")
     assert [st_id for (st_id,) in rows] == st_ids
+
+
+_SURVIVOR_BEFORE = _member(2, "susie.alt@example.com", 999)
+
+
+@pytest.mark.parametrize(
+    ("survivor_before", "survivor_adder", "adds_after"),
+    [
+        pytest.param(
+            None, None, [(2, 5), (6, 2)], id="survivor-takes-over-the-duplicate-row"
+        ),
+        pytest.param(
+            _SURVIVOR_BEFORE,
+            None,
+            [(2, 5), (6, 2)],
+            id="duplicate-folds-into-the-survivor-row",
+        ),
+        pytest.param(
+            _SURVIVOR_BEFORE,
+            6,
+            [(2, 6), (6, 2)],
+            id="survivor-keeps-its-own-add-to-a-shared-body",
+        ),
+    ],
+)
+async def test_merge_keeps_manual_adds_and_their_attribution(
+    database, survivor_before, survivor_adder, adds_after
+) -> None:
+    # Ralsei leads Steering and manually added Susie's duplicate account, which in
+    # turn added Kris. Once Solidarity Tech merges the duplicate into Susie's
+    # surviving account, Susie is still in Steering on Ralsei's say-so, and Kris's
+    # add is credited to Susie rather than to no one.
+    ralsei = _member(5, "ralsei@example.com", None, leads=_STEERING)
+    kris = _member(6, "kris@example.com", None)
+    duplicate = _member(1, "susie@example.com", 555)
+    before = [ralsei, kris, duplicate]
+    adds = [(1, 5), (6, 1)]
+    if survivor_before is not None:
+        before.append(survivor_before)
+    if survivor_adder is not None:
+        adds.append((2, survivor_adder))
+    await _pull(database, before, RecordingAuditSink())
+    _seed_manual_adds(database, adds)
+    ids_before = dict(_select(database, "SELECT st_id, id FROM members"))
+
+    survivor = _member(2, "susie@example.com", 999)
+    report = await _pull(database, [ralsei, kris, survivor], RecordingAuditSink())
+
+    assert [(m.survivor_st_id, m.duplicate_st_id) for m in report.merges] == [(2, 1)]
+    ids_after = dict(_select(database, "SELECT st_id, id FROM members"))
+    assert ids_after[2] == ids_before[1 if survivor_before is None else 2]
+    assert (
+        _select(
+            database,
+            "SELECT m.st_id, adder.st_id FROM body_memberships bm"
+            " JOIN members m ON m.id = bm.member_id"
+            " LEFT JOIN members adder ON adder.id = bm.added_by"
+            " WHERE bm.role = 'member' ORDER BY m.st_id",
+        )
+        == adds_after
+    )
 
 
 async def test_pull_stores_the_chosen_name(database) -> None:

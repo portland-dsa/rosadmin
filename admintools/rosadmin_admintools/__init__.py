@@ -51,7 +51,7 @@ def create_admin_app(
 ) -> FastAPI:
     """Build the admin app over an already-open `pool`.
 
-    `audit` records the merge duplicates a triggered pull deletes. The persona
+    `audit` records the account merges a triggered pull completes. The persona
     relay routes (`/admin/personas/*`) are mounted only when
     `mock_control_base` is truthy - absence (`None` or an empty string), not a
     403, when the configured membership source is the real Solidarity Tech

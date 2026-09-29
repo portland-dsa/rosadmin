@@ -195,10 +195,10 @@ def step_manual_add(context, email, body):
 
 @when('Susie deletes "{email}"\'s member record outright')
 def step_delete_member(context, email):
-    # The pull deletes a member row only to complete an account merge; this is a
-    # direct DELETE, standing in for a future deprovision sweep, to pin what a
-    # manual add's attribution does when the adding leader's own record
-    # disappears.
+    # The pull deletes a member row only when folding an account merge, after
+    # re-attributing its adds; this is a direct DELETE, standing in for a future
+    # deprovision sweep, to pin what a manual add's attribution does when the
+    # adding leader's own record disappears.
     with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
         conn.execute("DELETE FROM members WHERE email = %s", (email,))
 

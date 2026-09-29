@@ -38,8 +38,8 @@ async def run_pull(
 def warn_pull_findings(report: PullReport) -> None:
     """Warn, by id, on every member of a pull an operator may need to chase.
 
-    Anomalies name only the internal member id; skipped members and deleted
-    merge duplicates name Solidarity Tech ids, never an email or a name. Shared
+    Anomalies name only the internal member id; skipped members and account
+    merges name Solidarity Tech ids, never an email or a name. Shared
     by `roster pull` and the `sync run` sweep, so the timer's journal carries
     the same ids a manual pull would.
     """
@@ -53,8 +53,9 @@ def warn_pull_findings(report: PullReport) -> None:
         )
     for merge in report.merges:
         logger.warning(
-            "deleted the row of Solidarity Tech id %d: an account merge moved its "
-            "email or Discord id to Solidarity Tech id %d",
+            "merged Solidarity Tech id %d into Solidarity Tech id %d, which "
+            "Solidarity Tech gave its email or Discord id; its manual group adds "
+            "carried over",
             merge.duplicate_st_id,
             merge.survivor_st_id,
         )
@@ -66,8 +67,7 @@ async def roster_pull() -> None:
 
     Warns, once per member, on every assessment the pull flags as an anomaly
     (the raw chapter-leader flag and the derived leadership roles disagree), on
-    every member skipped for a clash, and on every duplicate row deleted to
-    complete an account merge.
+    every member skipped for a clash, and on every account merge it completes.
     """
     source = SolidarityTechClient.from_env(os.environ)
     pool = make_pool(dsn_from_env(os.environ))
@@ -82,7 +82,7 @@ async def roster_pull() -> None:
     warn_pull_findings(report)
     logger.info(
         "roster pull complete: %d members, %d bodies, %d leader rows, %d anomalies, "
-        "%d skipped, %d merge duplicates deleted, %d absent members lapsed, "
+        "%d skipped, %d account merges, %d absent members lapsed, "
         "%d lapse refused",
         report.members_upserted,
         report.bodies_upserted,

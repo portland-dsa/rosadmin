@@ -69,8 +69,8 @@ async def sync_run(
         Parameter(
             help="Rehearse the Google sync: real reads, the real diff, no Google "
             "writes. The roster pull still runs and writes the database, short "
-            "of deleting an account merge's duplicate row - add --skip-pull to "
-            "reconcile against the database as it stands."
+            "of completing an account merge - add --skip-pull to reconcile "
+            "against the database as it stands."
         ),
     ] = False,
     skip_pull: Annotated[
@@ -137,8 +137,7 @@ def _report(report: SweepReport, *, dry_run: bool) -> None:
     if report.pull is not None:
         warn_pull_findings(report.pull)
         logger.info(
-            "pull: %d members, %d absent lapsed, %d skipped, "
-            "%d merge duplicates deleted",
+            "pull: %d members, %d absent lapsed, %d skipped, %d account merges",
             report.pull.members_upserted,
             report.pull.absent_lapsed,
             len(report.pull.skipped_st_ids),

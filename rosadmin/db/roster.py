@@ -6,17 +6,17 @@ failure rolls it all back and a retry is always safe. Each member is upserted
 under its own savepoint, so a single record clashing with another's unique
 email or Discord id is skipped and reported, not fatal - unless the row it
 clashed with belongs to no one in this roster, which is what a Solidarity Tech
-account merge leaves behind (see `AccountMerge`). That row is deleted and the
-upsert retried. Solidarity Tech is read-only to this codebase, so the only
-store a pull can affect is this one.
+account merge leaves behind (see `AccountMerge`). That row is folded into the
+survivor's and the upsert retried. Solidarity Tech is read-only to this
+codebase, so the only store a pull can affect is this one.
 A known accepted edge: a record that transiently fails decode client-side is
 just as invisible to the pull as a genuine absence, so it lapses the same way
 and self-restores on the next clean pull - unless, in that same pull, another
-record claims its email or Discord id, in which case its row is deleted as a
-merge duplicate. A pull that would lapse an implausible share of the
-good-standing roster in one pass refuses the lapse outright instead of
-applying it, and deletes no merge duplicates either - see `LAPSE_FUSE_FLOOR`
-and `LAPSE_FUSE_FRACTION`.
+record claims its email or Discord id, in which case its row is folded into
+that record's as a merge duplicate. A pull that would lapse an implausible
+share of the good-standing roster in one pass refuses the lapse outright
+instead of applying it, and completes no account merges either - see
+`LAPSE_FUSE_FLOOR` and `LAPSE_FUSE_FRACTION`.
 
 There are two entry points that can call `pull_roster` (the CLI and the admin
 socket's pull route), and nothing outside this function serializes them. The
@@ -76,17 +76,39 @@ _SELECT_BODY_ID = """
     SELECT id FROM leadership_bodies WHERE name = %(name)s AND body_type = %(body_type)s
 """
 
-#: Deletes the rows holding a member's email or Discord id whose own st_id is
-#: absent from this pull's roster - an account merge's duplicates. Absence from
-#: the roster is the test, not local standing: a member whose dues lapsed is
-#: still in the roster and still owns their row. A NULL Discord id matches
-#: nothing, so a member without one can only claim an email.
-_DELETE_MERGE_DUPLICATES = """
-    DELETE FROM members
+#: The rows holding a member's email or Discord id whose own st_id is absent
+#: from this pull's roster - an account merge's duplicates. Absence from the
+#: roster is the test, not local standing: a member whose dues lapsed is still
+#: in the roster and still owns their row. A NULL Discord id matches nothing,
+#: so a member without one can only claim an email. Ordered, so which row a
+#: survivor takes over never depends on the plan Postgres picks.
+_SELECT_MERGE_DUPLICATES = """
+    SELECT id, st_id FROM members
     WHERE (email = %(email)s OR discord_user_id = %(discord_id)s)
       AND NOT (st_id = ANY(%(roster_st_ids)s::bigint[]))
-    RETURNING id, st_id
+    ORDER BY st_id
 """
+
+_SELECT_MEMBER_ID = "SELECT id FROM members WHERE st_id = %(st_id)s"
+
+_REKEY_MEMBER = "UPDATE members SET st_id = %(st_id)s WHERE id = %(id)s"
+
+#: Folding one member row into another, in the order that loses nothing: the
+#: manual adds move over first (a body the target already belongs to keeps the
+#: target's own row), then the adds the folded row made are re-attributed, and
+#: only then is it deleted. Its leader rows go with it - the records re-derive
+#: the survivor's own in the same pull.
+_CARRY_MANUAL_ADDS = """
+    INSERT INTO body_memberships (member_id, body_id, role, added_by, manually_added_at)
+    SELECT %(into_id)s, body_id, role, added_by, manually_added_at
+    FROM body_memberships
+    WHERE member_id = %(from_id)s AND role = 'member'
+    ON CONFLICT (member_id, body_id) DO NOTHING
+"""
+_CARRY_ATTRIBUTION = """
+    UPDATE body_memberships SET added_by = %(into_id)s WHERE added_by = %(from_id)s
+"""
+_DELETE_FOLDED_MEMBER = "DELETE FROM members WHERE id = %(from_id)s"
 
 #: The global leader reconcile: driven off parallel arrays through `unnest`
 #: rather than a literal `IN (...)`/`NOT IN (...)`, which is invalid SQL when
@@ -148,7 +170,7 @@ _LAPSE_ABSENT_MEMBERS = """
 #: (an empty or truncated upstream, a decoder-wide failure), so the lapse is
 #: refused rather than stripping standing from most of the roster. The verdict is
 #: reached before the pull writes anything, and a pull too broken to trust with
-#: standing is not trusted to delete merge duplicates either. Mirrors the
+#: standing is not trusted to complete account merges either. Mirrors the
 #: reconcile sweep's removal fuse.
 LAPSE_FUSE_FLOOR = 5
 LAPSE_FUSE_FRACTION = 0.10
@@ -163,8 +185,8 @@ _COUNT_LAPSE_CANDIDATES = """
     WHERE standing = 'good_standing'
 """
 
-#: The audit actor for the rows a pull deletes: a fixed system principal,
-#: pseudonymized like any other actor.
+#: The audit actor for the account merges a pull completes: a fixed system
+#: principal, pseudonymized like any other actor.
 PULL_ACTOR = "roster_pull"
 
 
@@ -178,14 +200,16 @@ class PullAnomaly:
 
 @dataclass(frozen=True)
 class AccountMerge:
-    """A duplicate member row the pull deleted to complete an account merge.
+    """A Solidarity Tech account merge the pull completed locally.
 
     Solidarity Tech resolves a duplicate account by deleting the duplicate's id
     and moving its email or Discord id onto the survivor. Locally the
     duplicate's row keeps holding that value, and the survivor's upsert collides
-    with it - the only sign of the merge this side ever sees. Deleting the row
-    cascades to its body memberships; leader rows come back under the survivor
-    from the records, but a manual add to the duplicate does not carry over.
+    with it - the only sign of the merge this side ever sees. The duplicate's
+    row is folded into the survivor's rather than dropped, so its manual group
+    adds, and the attribution of adds it made, carry over (see
+    `_merge_duplicates`). `duplicate_member_id` is the row's id before the
+    merge; a survivor with no row of its own keeps using it.
     """
 
     survivor_st_id: int
@@ -230,10 +254,10 @@ async def pull_roster(
     stepped down from loses only that pair - a co-leader's row on the same body,
     or a member absent from this pull, is untouched.
 
-    Every merge duplicate the pull deletes is audited once the pull has
+    Every account merge the pull completes is audited once the pull has
     committed. A `dry_run` still upserts and lapses, which the next pull
-    re-states or restores, but holds back the one write nothing can undo:
-    deleting a merge duplicate. The survivor is skipped instead.
+    re-states or restores, but holds back the one change no later pull
+    reverses: completing an account merge. The survivor is skipped instead.
 
     Concurrent pulls serialize on the advisory lock, but the lock statement
     itself pins the waiting transaction's snapshot before it blocks, so the
@@ -251,7 +275,7 @@ async def pull_roster(
         for merge in report.merges:
             await record_best_effort(
                 audit,
-                "roster_duplicate_deleted",
+                "roster_account_merged",
                 actor=PULL_ACTOR,
                 subject=str(merge.duplicate_member_id),
             )
@@ -343,16 +367,16 @@ async def _store_member(
     member: Member,
     *,
     roster_st_ids: list[int],
-    delete_duplicates: bool,
+    merge_duplicates: bool,
     body_ids: dict[Leadership, UUID],
     pair_member_ids: list[UUID],
     pair_body_ids: list[UUID],
 ) -> _Stored:
-    """`_upsert_one`, deleting an account merge's duplicates if they block it.
+    """`_upsert_one`, completing an account merge if a duplicate blocks it.
 
     Raises `psycopg.errors.UniqueViolation` for a clash this must leave alone:
     the value is held by a member still in `roster_st_ids`, which is bad data
-    rather than a merge, or `delete_duplicates` is off. Either way every row is
+    rather than a merge, or `merge_duplicates` is off. Either way every row is
     as it was before the call.
     """
     try:
@@ -361,33 +385,63 @@ async def _store_member(
         )
         return _Stored(member_id, assessment, merges=())
     except psycopg.errors.UniqueViolation:
-        if not delete_duplicates:
+        if not merge_duplicates:
             raise
-    # One savepoint around the delete and the retry: when the retry still
-    # collides - a member in the roster holds the other value - the delete
-    # rolls back with it, and the skip leaves both rows untouched.
+    # One savepoint around the merge and the retry: when the retry still
+    # collides - a member in the roster holds the other value - the merge
+    # rolls back with it, and the skip leaves every row untouched.
     async with conn.transaction():
-        cursor = await conn.execute(
-            _DELETE_MERGE_DUPLICATES,
-            {
-                "email": member.email,
-                "discord_id": member.discord_id,
-                "roster_st_ids": roster_st_ids,
-            },
-        )
-        deleted = await cursor.fetchall()
+        merges = await _merge_duplicates(conn, member, roster_st_ids)
         member_id, assessment = await _upsert_one(
             conn, member, body_ids, pair_member_ids, pair_body_ids
         )
-    merges = tuple(
+    return _Stored(member_id, assessment, merges)
+
+
+async def _merge_duplicates(
+    conn: psycopg.AsyncConnection, member: Member, roster_st_ids: list[int]
+) -> tuple[AccountMerge, ...]:
+    """Fold every merge duplicate holding `member`'s email or Discord id into
+    the row `member` is about to be upserted onto.
+
+    A survivor with no row of its own takes over the first duplicate's,
+    re-keyed to the survivor's st_id, so that member id and everything attached
+    to it carry on untouched. Any other duplicate is folded into the survivor's
+    row (see `_CARRY_MANUAL_ADDS`). Changes nothing when no duplicate holds the
+    value, which leaves the retry to fail on the genuine clash.
+    """
+    cursor = await conn.execute(
+        _SELECT_MERGE_DUPLICATES,
+        {
+            "email": member.email,
+            "discord_id": member.discord_id,
+            "roster_st_ids": roster_st_ids,
+        },
+    )
+    duplicates = await cursor.fetchall()
+    if len(duplicates) == 0:
+        return ()
+    cursor = await conn.execute(_SELECT_MEMBER_ID, {"st_id": member.st_id})
+    survivor_row = await cursor.fetchone()
+    to_fold: list[UUID] = [duplicate_id for duplicate_id, _ in duplicates]
+    if survivor_row is None:
+        into_id = to_fold.pop(0)
+        await conn.execute(_REKEY_MEMBER, {"id": into_id, "st_id": member.st_id})
+    else:
+        into_id = survivor_row[0]
+    for from_id in to_fold:
+        fold = {"from_id": from_id, "into_id": into_id}
+        await conn.execute(_CARRY_MANUAL_ADDS, fold)
+        await conn.execute(_CARRY_ATTRIBUTION, fold)
+        await conn.execute(_DELETE_FOLDED_MEMBER, fold)
+    return tuple(
         AccountMerge(
             survivor_st_id=member.st_id,
             duplicate_st_id=duplicate_st_id,
-            duplicate_member_id=duplicate_member_id,
+            duplicate_member_id=duplicate_id,
         )
-        for duplicate_member_id, duplicate_st_id in deleted
+        for duplicate_id, duplicate_st_id in duplicates
     )
-    return _Stored(member_id, assessment, merges)
 
 
 async def _pull_in(
@@ -425,7 +479,7 @@ async def _pull_in(
                     conn,
                     member,
                     roster_st_ids=roster_st_ids,
-                    delete_duplicates=not (dry_run or fuse_tripped),
+                    merge_duplicates=not (dry_run or fuse_tripped),
                     body_ids=body_ids,
                     pair_member_ids=pair_member_ids,
                     pair_body_ids=pair_body_ids,

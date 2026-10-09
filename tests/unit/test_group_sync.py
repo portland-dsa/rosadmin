@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 import httplib2
 import pytest
@@ -11,6 +13,7 @@ from rosadmin.google_group import GoogleGroup
 from rosadmin.group_sync import (
     DEFAULT_WRITE_RATE,
     DryRunGroupSync,
+    EmailStatuses,
     GoogleGroupSync,
     SyncOutcome,
     _add_outcome,
@@ -18,6 +21,7 @@ from rosadmin.group_sync import (
     _skip_gate,
     _write_rate_from_env,
     group_sync_from_env,
+    sync_target,
 )
 from rosadmin.membership.source import Email
 
@@ -195,3 +199,78 @@ def test_classifiers_read_googles_refusal(op, status, reasons, expected):
     """
     outcome = _add_outcome(status, reasons) if op == "add" else _remove_outcome(status)
     assert outcome == expected
+
+
+@dataclass(frozen=True)
+class _Row:
+    email: str
+    alternate_email: str | None
+
+
+_DAY = datetime(2026, 7, 14, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("primary", "alternate", "accepted", "refused_days_ago", "expected"),
+    [
+        ("kris@example.net", "kris@gmail.com", (), {}, "kris@gmail.com"),
+        ("kris@gmail.com", "kris.2@gmail.com", (), {}, "kris.2@gmail.com"),
+        (
+            "Kris@Gmail.com",
+            "kris.2@gmail.com",
+            ("kris@gmail.com",),
+            {},
+            "Kris@Gmail.com",
+        ),
+        (
+            "ralsei@example.net",
+            "ralsei@castle.example.net",
+            (),
+            {},
+            "ralsei@example.net",
+        ),
+        (
+            "ralsei@example.net",
+            "ralsei@castle.example.net",
+            (),
+            {"ralsei@example.net": 1},
+            "ralsei@castle.example.net",
+        ),
+        (
+            "ralsei@example.net",
+            "ralsei@castle.example.net",
+            (),
+            {"ralsei@example.net": 1, "ralsei@castle.example.net": 5},
+            "ralsei@castle.example.net",
+        ),
+        ("spamton@example.com", "spamton@gmail.com", (), {}, "spamton@example.com"),
+        (
+            "susie@example.net",
+            "susie@example.com",
+            (),
+            {"susie@example.net": 1},
+            "susie@example.net",
+        ),
+        ("susie@example.net", None, (), {}, "susie@example.net"),
+    ],
+    ids=[
+        "gmail-alternate-first",
+        "gmail-alternate-beats-gmail-primary",
+        "accepted-address-stays",
+        "primary-before-other-alternate",
+        "refused-primary-falls-to-alternate",
+        "all-refused-retries-longest-refused",
+        "example-primary-never-redirects",
+        "example-alternate-never-a-candidate",
+        "no-alternate",
+    ],
+)
+def test_sync_target_ranks_candidates_by_what_google_said(
+    primary, alternate, accepted, refused_days_ago, expected
+):
+    statuses = EmailStatuses(
+        accepted=frozenset(accepted),
+        refused_at={a: _DAY - timedelta(days=d) for a, d in refused_days_ago.items()},
+        live=frozenset(),
+    )
+    assert sync_target(_Row(primary, alternate), statuses) == expected

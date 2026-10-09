@@ -8,17 +8,11 @@ from uuid import uuid4
 
 import pytest
 
+from rosadmin.db.google_email_status import REFUSAL_FUSE_CEILING, RefusalReport
 from rosadmin.google_group import GroupMemberEntry, GroupsPermissionLevel
 from rosadmin.group_sync import SyncOutcome
 from rosadmin.membership.source import Email
-from rosadmin.reconcile import (
-    REFUSAL_FUSE_CEILING,
-    Presence,
-    RefusalReport,
-    SweepReport,
-    _abandoned,
-    plan_group,
-)
+from rosadmin.reconcile import Presence, SweepReport, _abandoned, plan_group
 
 
 def _user(

@@ -30,8 +30,8 @@ class Member(ApiModel):
     full_name: str
     """The member's full name, as derived by Solidarity Tech (note: preferred name is used over first name where applicable)"""
     email: str
-    """The member's official email. Note, if their alternate email is a Gmail while their official one isn't, the account 
-    with access may not match the one displayed!"""
+    """The member's official email. The account with Google access may be their
+    alternate email instead, so it may not match the one displayed."""
 
 
 class GroupMember(Member):

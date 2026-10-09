@@ -8,7 +8,7 @@ every sweep), a mass removal trips a fuse instead of executing, and an address
 Google has already refused to hold is not offered again until its refusal lapses
 - while still counting as desired, so it is never swept out either.
 
-That last set - the addresses of `rosadmin.db.unmirrorable` - is read once per
+That last set - the refusals in `rosadmin.db.google_email_status` - is read once per
 run and grows as the run learns, which is why the sweep, not the Google
 boundary, is what writes a refusal down.
 """
@@ -37,16 +37,17 @@ from rosadmin.db.directory import (
     mark_group_provisioning_bootstrapped,
     set_body_link,
 )
+from rosadmin.db.google_email_status import (
+    RETRIES_PER_RUN,
+    Refusal,
+    RefusalReport,
+    commit_refusals,
+    email_statuses,
+    remember_accepted,
+)
 from rosadmin.db.prune import prune_expired
 from rosadmin.db.reconcile import desired_audiences, desired_for_group
 from rosadmin.db.roster import PullReport, pull_roster
-from rosadmin.db.unmirrorable import (
-    RETRIES_PER_RUN,
-    is_refusal_learning_bootstrapped,
-    mark_refusal_learning_bootstrapped,
-    record_unmirrorable,
-    refused_addresses,
-)
 from rosadmin.google_group import (
     SECURE_SETTINGS,
     SECURITY_LABEL,
@@ -61,6 +62,7 @@ from rosadmin.group_naming import (
     GroupNameTooLong,
 )
 from rosadmin.group_sync import (
+    ACCEPTED,
     SKIPPED,
     UNMIRRORABLE,
     GroupLister,
@@ -436,39 +438,6 @@ class GroupOutcome:
     failed: int
 
 
-#: How many refusals one armed run may write down. A steady state meets a
-#: handful - a member joins carrying an address with no Google account behind it -
-#: so a run meeting dozens is not learning about the roster, it is learning that
-#: something outside it has changed: a scope withdrawn, the security label
-#: misapplied, Google answering 412 to everything. A batch past this ceiling is
-#: refused wholesale rather than recorded, on the same principle as the removal
-#: fuse and the creation tripwire: the point of a fuse is that it will not do the
-#: thing, and a fuse that merely reported afterwards would leave the roster
-#: suppressed for a season and go quiet on the very next run, having nothing left
-#: to learn.
-REFUSAL_FUSE_CEILING = 25
-
-
-@dataclass(frozen=True)
-class RefusalReport:
-    """What one run did with the refusals Google issued it.
-
-    `received` counts them as Google gave them, so no failure of the store can
-    quiet what reads it; `retries` is how many of those were lapsed refusals asked
-    about again. `recorded` is what actually landed. `refused` is the fuse saying
-    no - the batch was too large to believe, and none of it was written.
-    """
-
-    received: int
-    retries: int
-    recorded: int
-    refused: int
-
-    @property
-    def has_failures(self) -> bool:
-        return self.refused > 0 or self.recorded < self.received - self.refused
-
-
 @dataclass(frozen=True)
 class SweepReport:
     """One run's outcome: the pull it began with and every group it touched."""
@@ -588,7 +557,8 @@ async def _sweep_locked(
         pending, _ = _plan_pending(await all_bodies(pool), provision, main_group_email)
         for group in pending:
             logger.info("would provision %s (%s)", group.email, group.name)
-    audiences = await desired_audiences(pool, main_group_email)
+    statuses = await email_statuses(pool)
+    audiences = await desired_audiences(pool, main_group_email, statuses)
     if lister is None:
         logger.warning(
             "google reads are disabled: reporting desired state only, applying nothing"
@@ -605,16 +575,16 @@ async def _sweep_locked(
     # refusal is met: a group swept later never re-offers an address an earlier
     # group has just proved bad, so a run meets each address once rather than once
     # per group it appears in.
-    refused = await refused_addresses(pool)
-    unmirrorable = set(refused.live)
+    unmirrorable = set(statuses.live)
     # Shrinks as groups spend the run's retries. An address retried in one group is
     # no longer a retry in the next.
-    lapsed_refusals = set(refused.lapsed)
+    lapsed_refusals = set(statuses.lapsed)
     retry_slots = RETRIES_PER_RUN
     # Held, not written, until the run is over: only the size of the whole batch
-    # can tell a trickle of new refusals from an event, and `_commit_refusals` is
+    # can tell a trickle of new refusals from an event, and `commit_refusals` is
     # where that judgement is made.
     refusals: list[Refusal] = []
+    accepted: set[Email] = set()
     outcomes: list[GroupOutcome] = []
     for group_email, desired in sorted(audiences.items()):
         try:
@@ -660,7 +630,9 @@ async def _sweep_locked(
                 len(actual),
             )
         if len(plan.adds) > 0 or len(plan.removes) > 0 or len(plan.excluded) > 0:
-            fresh = await desired_for_group(pool, group_email, main_group_email)
+            fresh = await desired_for_group(
+                pool, group_email, main_group_email, statuses
+            )
             plan = _recheck(plan, fresh)
         outcomes.append(
             await _apply(
@@ -670,54 +642,25 @@ async def _sweep_locked(
                 lister=lister,
                 unmirrorable=unmirrorable,
                 refusals=refusals,
+                accepted=accepted,
             )
         )
-    return SweepReport(
+    report = SweepReport(
         pull=pull,
         groups=tuple(outcomes),
         lister_available=True,
         provision=provision_report,
-        refusals=await _commit_refusals(
-            pool, refusals, known=refused.lapsed, dry_run=dry_run
+        refusals=await commit_refusals(
+            pool, refusals, known=statuses.lapsed, dry_run=dry_run
         ),
     )
-
-
-async def _commit_refusals(
-    pool: AsyncConnectionPool,
-    refusals: list[Refusal],
-    *,
-    known: frozenset[str],
-    dry_run: bool,
-) -> RefusalReport:
-    """Write down what Google refused this run."""
-    received = len(refusals)
-    news = sum(1 for refusal in refusals if refusal.address.lower() not in known)
-    retries = received - news
-    if dry_run:
-        if received > 0:
-            logger.info("dry-run: would record %d refused addresses", received)
-        return RefusalReport(received=received, retries=retries, recorded=0, refused=0)
-    bootstrapped = await is_refusal_learning_bootstrapped(pool)
-    if bootstrapped and news > REFUSAL_FUSE_CEILING:
-        logger.error(
-            "refusal fuse: google refused %d addresses it had not refused before, "
-            "past the ceiling of %d; recording none of them.",
-            news,
-            REFUSAL_FUSE_CEILING,
+    # After the refusals, so an address accepted in one group outranks a refusal
+    # met for it in another.
+    if not dry_run:
+        await remember_accepted(
+            pool, {a for a in accepted if a.lower() not in statuses.accepted}
         )
-        return RefusalReport(
-            received=received, retries=retries, recorded=0, refused=received
-        )
-    recorded = 0
-    for refusal in refusals:
-        if await _remember_refusal(pool, refusal):
-            recorded += 1
-    if not bootstrapped and recorded > 0:
-        await mark_refusal_learning_bootstrapped(pool)
-    return RefusalReport(
-        received=received, retries=retries, recorded=recorded, refused=0
-    )
+    return report
 
 
 def _recheck(plan: GroupPlan, fresh: dict[str, UUID]) -> GroupPlan:
@@ -758,21 +701,6 @@ class Presence(Enum):
     Unknown = "unknown"
 
 
-@dataclass(frozen=True)
-class Refusal:
-    """One address Google refused, and the member and group it was refused for.
-
-    Held rather than written the moment it is met: a refusal is only believable
-    once the group it was refused on is known to still exist, and only recordable
-    once the size of the run's whole batch is known.
-    """
-
-    address: Email
-    member_id: UUID
-    group_email: Email
-    outcome: SyncOutcome
-
-
 async def _presence(lister: GroupLister, group_email: Email) -> Presence:
     """Ask Google whether the group is still there - only ever to read a 404.
 
@@ -796,44 +724,6 @@ async def _presence(lister: GroupLister, group_email: Email) -> Presence:
     return Presence.Present if found else Presence.Gone
 
 
-async def _remember_refusal(pool: AsyncConnectionPool, refusal: Refusal) -> bool:
-    """Write one refusal down, and never let that write end the sweep.
-
-    Like the audit row beside it, this records something that has already
-    happened out at Google. A database that cannot take it down is worth an
-    operator's attention, but it is not worth abandoning what the run has not
-    reached yet: the unrecorded address is simply offered - and refused - again
-    next run, which is exactly where it started. Answers whether the row landed,
-    because a refusal that was not written down is one the next run must go and
-    ask about again, and the report says so.
-
-    The failure is named by its class and SQLSTATE, never by the server's own
-    message: Postgres puts the whole offending row in the detail of a constraint
-    violation, and that row carries the member's address.
-    """
-    try:
-        await record_unmirrorable(pool, refusal.address, refusal.outcome)
-    except psycopg.Error as error:
-        logger.error(
-            "sweep: could not record google's refusal of member %s on %s (%s): "
-            "%s, sqlstate %s",
-            refusal.member_id,
-            refusal.group_email,
-            refusal.outcome.value,
-            type(error).__name__,
-            error.sqlstate,
-        )
-        return False
-    logger.info(
-        "sweep: google refuses member %s on %s (%s); "
-        "the address will not be offered again this window",
-        refusal.member_id,
-        refusal.group_email,
-        refusal.outcome.value,
-    )
-    return True
-
-
 async def _apply(
     plan: GroupPlan,
     *,
@@ -842,6 +732,7 @@ async def _apply(
     lister: GroupLister,
     unmirrorable: set[str],
     refusals: list[Refusal],
+    accepted: set[Email],
 ) -> GroupOutcome:
     """Adds first, then removes - a transient inconsistency errs toward access."""
     tally: Counter[SyncOutcome] = Counter()
@@ -859,6 +750,8 @@ async def _apply(
                 tally[SyncOutcome.Failed] += 1
                 continue
         tally[outcome] += 1
+        if outcome in ACCEPTED:
+            accepted.add(add.address)
         if outcome is SyncOutcome.Applied:
             await record_best_effort(
                 audit,

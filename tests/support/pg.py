@@ -33,7 +33,7 @@ _TABLES = (
     "members",
     "leadership_bodies",
     "body_memberships",
-    "unmirrorable_addresses",
+    "google_email_status",
     "sessions",
     "jti_replay",
     "rate_limit_counters",

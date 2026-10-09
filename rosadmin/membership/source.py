@@ -15,25 +15,6 @@ Email = NewType("Email", str)
 """An email address that has crossed a decode or row-mapping boundary."""
 
 
-def sync_email(primary: Email, alternate: Email | None) -> Email:
-    """The address Google-side membership targets.
-
-    The primary when it is a gmail; else the alternate when that is a gmail
-    (the Drive-capable account members record when their primary has none);
-    else the primary. Display and search always use the primary - this rule
-    governs only the Google mirror.
-    """
-    if _is_gmail(primary):
-        return primary
-    if alternate is not None and _is_gmail(alternate):
-        return alternate
-    return primary
-
-
-def _is_gmail(address: Email) -> bool:
-    return address.lower().endswith("@gmail.com")
-
-
 class Standing(Enum):
     """A member's decoded membership standing.
 
@@ -79,8 +60,9 @@ class Member:
     to `leads`, the bodies derived from the leadership fields. Dues expiry and
     group belonging beyond leadership are not modeled yet.
 
-    `alternate_email` is a member-supplied second address, read only for
-    `sync_email` - display and search always use `email`.
+    `alternate_email` is a member-supplied second address, read only to pick the
+    Google-side address (`group_sync.sync_target`) - display and search always
+    use `email`.
     """
 
     st_id: int

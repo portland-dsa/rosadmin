@@ -22,6 +22,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import TYPE_CHECKING, Protocol, TypeAlias, runtime_checkable
 
@@ -42,7 +43,7 @@ from rosadmin.google_group import (
     build_services,
     list_group_members,
 )
-from rosadmin.membership.source import Email, sync_email
+from rosadmin.membership.source import Email
 
 if TYPE_CHECKING:
     from google.oauth2.service_account import Credentials
@@ -78,21 +79,53 @@ class SyncAddresses(Protocol):
     def alternate_email(self) -> str | None: ...
 
 
-def sync_target(row: SyncAddresses) -> Email:
-    """The address a Google membership operation targets, per `sync_email`.
+@dataclass(frozen=True)
+class EmailStatuses:
+    """What Google last said about each address it has been offered, keyed lowercase."""
 
-    A record whose primary is an example-domain address is an unusable or
-    fabricated record wholesale, so it never redirects to an alternate: the
-    skip gate must see the example primary and skip, not a plausible gmail
-    alternate it would happily deliver to. Without this, a fabricated test
-    persona carrying a made-up gmail alternate would sail through the gate
-    and really be invited on a live tenant.
+    accepted: frozenset[str]
+    #: When each refused address was last refused, lapsed refusals included.
+    refused_at: Mapping[str, datetime]
+    #: The refusals still inside their retry window.
+    live: frozenset[str]
+
+    @property
+    def lapsed(self) -> frozenset[str]:
+        return frozenset(self.refused_at.keys() - self.live)
+
+
+def sync_target(row: SyncAddresses, statuses: EmailStatuses) -> Email:
+    """The address a Google membership operation targets for this member.
+
+    The candidates, in order, are a gmail alternate, the primary, then any other
+    alternate. The first Google has accepted wins, so a member keeps the address
+    they are already in under; else the first it has never refused; else the one
+    refused longest ago, which is the one retried once its refusal lapses.
+
+    An example-domain primary marks a fabricated record and never redirects, so
+    the skip gate sees it rather than a deliverable alternate.
     """
     primary = Email(row.email)
     if primary.lower().endswith(EXAMPLE_DOMAIN):
         return primary
-    alternate = Email(row.alternate_email) if row.alternate_email else None
-    return sync_email(primary, alternate)
+    candidates = _candidates(primary, row.alternate_email)
+    for address in candidates:
+        if address.lower() in statuses.accepted:
+            return address
+    for address in candidates:
+        if address.lower() not in statuses.refused_at:
+            return address
+    return min(candidates, key=lambda address: statuses.refused_at[address.lower()])
+
+
+def _candidates(primary: Email, alternate: str | None) -> list[Email]:
+    if alternate is None or alternate.lower() == primary.lower():
+        return [primary]
+    if alternate.lower().endswith(EXAMPLE_DOMAIN):
+        return [primary]
+    if alternate.lower().endswith("@gmail.com"):
+        return [Email(alternate), primary]
+    return [primary, Email(alternate)]
 
 
 class SyncOutcome(Enum):
@@ -111,9 +144,13 @@ class SyncOutcome(Enum):
 #: The outcomes that are verdicts about the address rather than about the
 #: attempt: Google answers identically on every future sweep until something
 #: changes on the member's side, so the sweep records the refusal and stops
-#: offering the address. A variant's value is the string stored in the reason
-#: column of `unmirrorable_addresses`, so the two can never drift apart.
+#: offering the address. A variant's value is the string stored in the status
+#: column of `google_email_status`, so the two can never drift apart.
 UNMIRRORABLE = frozenset({SyncOutcome.NoGoogleAccount, SyncOutcome.AddressNotFound})
+
+#: The outcomes of an add that prove Google holds the address: it took the
+#: insert, or already had it.
+ACCEPTED = frozenset({SyncOutcome.Applied, SyncOutcome.AlreadyConverged})
 
 #: The outcomes where nothing was attempted at all - a gate fired, or the run
 #: was a rehearsal. Grouped so a caller tallying a sweep asks the question once

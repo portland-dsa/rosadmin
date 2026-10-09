@@ -381,7 +381,7 @@
           "email": {
             "type": "string",
             "title": "Email",
-            "description": "The member's official email. Note, if their alternate email is a Gmail while their official one isn't, the account \nwith access may not match the one displayed!"
+            "description": "The member's official email. The account with Google access may be their\nalternate email instead, so it may not match the one displayed."
           },
           "role": {
             "$ref": "#/components/schemas/Role",
@@ -479,7 +479,7 @@
           "email": {
             "type": "string",
             "title": "Email",
-            "description": "The member's official email. Note, if their alternate email is a Gmail while their official one isn't, the account \nwith access may not match the one displayed!"
+            "description": "The member's official email. The account with Google access may be their\nalternate email instead, so it may not match the one displayed."
           }
         },
         "type": "object",

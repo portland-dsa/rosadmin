@@ -31,6 +31,10 @@ is one forward migration with an optional `.rollback.sql` companion.
   since gained a Google account is offered again on its own.
 - `index_members_email_lower.sql` - a functional index on `lower(email)` so the
   exact-email member search is an index probe rather than a sequential scan.
+- `track_google_email_status.sql` - renames `unmirrorable_addresses` to
+  `google_email_status` and adds an `accepted` status beside the two refusals, so
+  the table records what Google last said about each address. Seeds `accepted` for
+  the address each good-standing member was already mirrored under.
 
 Roles are not here: they are cluster-global while migrations run per-database, so
 the roles themselves (the group `rosadmin_app`, each stage's login role, and the

@@ -103,6 +103,20 @@ Feature: The reconcile sweep converges Google Groups to the records
     When Ralsei fixes Google and the sweep runs again
     Then the group "everyone@example.net" contains "refused0@example.net"
 
+  Scenario: A season-old cohort of refusals comes back a batch at a time, and is not news
+    Given refusal learning has already bootstrapped
+    And 30 members in good standing Google has no account for
+    And all of them were refused 100 days ago
+    And a member "spamton@example.net" in standing "good_standing"
+    And Google has no account for "spamton@example.net"
+    When the sweep runs
+    Then the sweep offered 25 of them again
+    And "spamton@example.net" is recorded unmirrorable for reason "no_google_account"
+    And the sweep run reports success
+    When the sweep runs
+    Then the sweep offered 5 of them again
+    And the sweep run reports success
+
   Scenario: A group owner and a nested group survive the sweep
     Given the group "everyone@example.net" already holds "noelle@example.net" as a "OWNER"
     And the group "everyone@example.net" already holds "lightners@example.net" as a nested group

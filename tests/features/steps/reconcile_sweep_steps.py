@@ -248,8 +248,8 @@ def step_lost_group(context, group):
 @given("{count:d} members in good standing Google has no account for")
 def step_many_refused_members(context, count):
     _ensure_context(context)
-    for i in range(count):
-        address = f"refused{i}@example.net"
+    context.refused_cohort = [f"refused{i}@example.net" for i in range(count)]
+    for address in context.refused_cohort:
         step_member(context, address, "good_standing")
         context.workspace.no_google_account.add(address)
 
@@ -292,18 +292,31 @@ def step_group_exists_empty(context, group):
     context.workspace.groups.setdefault(group, {})
 
 
-@given('"{address:S}" was refused {days:d} days ago')
-def step_refused_days_ago(context, address, days):
-    """Backdate a refusal, which is the only way a scenario reaches the retry
+def _backdate_refusals(context, addresses: list[str], days: int) -> None:
+    """Backdate refusals, which is the only way a scenario reaches the retry
     window: `RETRY_AFTER` is measured against `observed_at`, and a row this run
     writes is always fresh."""
     _ensure_context(context)
     with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
-        conn.execute(
-            "INSERT INTO unmirrorable_addresses (address, reason, observed_at) "
-            "VALUES (%s, %s, now() - make_interval(days => %s::int))",
-            (address.casefold(), SyncOutcome.NoGoogleAccount.value, days),
-        )
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                "INSERT INTO unmirrorable_addresses (address, reason, observed_at) "
+                "VALUES (%s, %s, now() - make_interval(days => %s::int))",
+                [
+                    (address.casefold(), SyncOutcome.NoGoogleAccount.value, days)
+                    for address in addresses
+                ],
+            )
+
+
+@given('"{address:S}" was refused {days:d} days ago')
+def step_refused_days_ago(context, address, days):
+    _backdate_refusals(context, [address], days)
+
+
+@given("all of them were refused {days:d} days ago")
+def step_cohort_refused_days_ago(context, days):
+    _backdate_refusals(context, context.refused_cohort, days)
 
 
 def _run_sweep(context, *, dry_run: bool) -> None:
@@ -390,6 +403,12 @@ def step_reports_success(context):
 @then('the sweep did not offer "{address:S}" to "{group:S}"')
 def step_did_not_offer(context, address, group):
     assert (group, address.casefold()) not in context.workspace.offered
+
+
+@then("the sweep offered {count:d} of them again")
+def step_cohort_offered(context, count):
+    offered = {address for _group, address in context.workspace.offered}
+    assert len(offered & set(context.refused_cohort)) == count
 
 
 @then('"{address:S}" is recorded unmirrorable for reason "{reason}"')

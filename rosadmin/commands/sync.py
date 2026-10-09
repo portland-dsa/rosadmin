@@ -158,8 +158,9 @@ def _report(report: SweepReport, *, dry_run: bool) -> None:
     if report.refusals is not None and report.refusals.received > 0:
         r = report.refusals
         logger.info(
-            "refusals: %d received, %d recorded, %d refused by the fuse",
+            "refusals: %d received (%d retries), %d recorded, %d refused by the fuse",
             r.received,
+            r.retries,
             r.recorded,
             r.refused,
         )
@@ -167,7 +168,7 @@ def _report(report: SweepReport, *, dry_run: bool) -> None:
     for g in report.groups:
         logger.info(
             "%s %s: planned +%d/-%d, applied %d, converged %d, skipped %d, "
-            "excluded %d (%d newly refused), refused %d, failed %d",
+            "excluded %d (%d refused this run), refused %d, failed %d",
             mode,
             g.group_email,
             g.planned_adds,

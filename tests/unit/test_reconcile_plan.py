@@ -217,20 +217,42 @@ def test_allow_mass_removal_overrides_the_fuse() -> None:
     assert plan.refused_removes == 0
 
 
+def test_a_lapsed_refusal_already_in_the_group_spends_no_retry() -> None:
+    """Berdly talked his way back into the group, but his old refusal is still on
+    file. The group already holds him, so there is nothing to ask Google, and the
+    run's one retry goes to Kris. Were it spent on Berdly, his stale row would
+    claim that slot on every run and nobody behind him would be asked again."""
+    lapsed = {"berdly@example.net", "kris@example.net", "noelle@example.net"}
+    plan = plan_group(
+        GROUP,
+        {address: MEMBER_ID for address in lapsed},
+        [_user("berdly@example.net")],
+        unmirrorable=NONE_REFUSED,
+        lapsed_refusals=lapsed,
+        retry_slots=1,
+        allow_mass_removal=False,
+    )
+    assert plan.retried == (Email("kris@example.net"),)
+    assert tuple(a.address for a in plan.adds) == ("kris@example.net",)
+    assert tuple(e.address for e in plan.excluded) == ("noelle@example.net",)
+
+
 def _report(refusals: RefusalReport) -> SweepReport:
     return SweepReport(pull=None, groups=(), lister_available=True, refusals=refusals)
 
 
 def test_a_trickle_of_refusals_is_recorded_and_the_run_stays_green() -> None:
     received = REFUSAL_FUSE_CEILING
-    report = _report(RefusalReport(received=received, recorded=received, refused=0))
+    report = _report(
+        RefusalReport(received=received, retries=0, recorded=received, refused=0)
+    )
     assert not report.has_failures
 
 
 def test_a_refusal_the_database_would_not_take_fails_the_run() -> None:
     """Silence about a refusal is the one thing that cannot be tolerated: an
     unrecorded address is offered to Google again in four hours, and forever."""
-    report = _report(RefusalReport(received=3, recorded=2, refused=0))
+    report = _report(RefusalReport(received=3, retries=0, recorded=2, refused=0))
     assert report.has_failures
 
 
@@ -239,7 +261,9 @@ def test_a_mass_refusal_is_refused_wholesale_and_fails_the_run() -> None:
     fuse records none of it - suppressing the roster for a season would be the
     real damage - and the run is red for as long as it keeps happening."""
     received = REFUSAL_FUSE_CEILING + 1
-    report = _report(RefusalReport(received=received, recorded=0, refused=received))
+    report = _report(
+        RefusalReport(received=received, retries=0, recorded=0, refused=received)
+    )
     assert report.has_failures
 
 

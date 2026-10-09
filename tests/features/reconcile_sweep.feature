@@ -72,6 +72,32 @@ Feature: The reconcile sweep converges Google Groups to the records
     When the sweep runs
     Then the group "everyone@example.net" contains "ralsei@example.net"
 
+  Scenario: Google refuses Ralsei's primary, so the sweep turns to his other address
+    Given a member "ralsei@example.net" in standing "good_standing"
+    And "ralsei@example.net" records the alternate "ralsei@castle.example.net"
+    And Google has no account for "ralsei@example.net"
+    When the sweep runs
+    Then "ralsei@example.net" is recorded unmirrorable for reason "no_google_account"
+    When the sweep runs
+    Then the group "everyone@example.net" contains "ralsei@castle.example.net"
+    And "ralsei@castle.example.net" is recorded as accepted
+
+  Scenario: Kris adds a gmail alternate and stays on the address Google already holds
+    Given a member "kris@example.net" in standing "good_standing"
+    When the sweep runs
+    Then "kris@example.net" is recorded as accepted
+    When "kris@example.net" records the alternate "kris@gmail.com"
+    And the sweep runs
+    Then the group "everyone@example.net" contains "kris@example.net"
+    And the group "everyone@example.net" does not contain "kris@gmail.com"
+
+  Scenario: A new member's gmail alternate is the one mirrored
+    Given a member "noelle@example.net" in standing "good_standing"
+    And "noelle@example.net" records the alternate "noelle@gmail.com"
+    When the sweep runs
+    Then the group "everyone@example.net" contains "noelle@gmail.com"
+    And the group "everyone@example.net" does not contain "noelle@example.net"
+
   Scenario: Google is authoritative for Spamton's address and does not have it
     Given a member "spamton@example.net" in standing "good_standing"
     And the group "everyone@example.net" already exists

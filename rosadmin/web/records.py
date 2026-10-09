@@ -37,6 +37,7 @@ from rosadmin.db.directory import (
     member_by_discord,
     member_by_email,
 )
+from rosadmin.db.google_email_status import email_statuses, remember_accepted
 from rosadmin.db.mutations import (
     ClaimOutcome,
     RemoveOutcome,
@@ -45,7 +46,7 @@ from rosadmin.db.mutations import (
     is_leader_of,
     member_row_by_id,
 )
-from rosadmin.group_sync import GroupSync, sync_target
+from rosadmin.group_sync import ACCEPTED, GroupSync, sync_target
 from rosadmin.membership.source import Email, Standing
 from rosadmin.web.models import (
     Group,
@@ -205,6 +206,11 @@ class RecordsGroupModify:
         pending = list(self._mirror_tasks)
         await asyncio.gather(*pending, return_exceptions=True)
 
+    async def _target_address(self, target: MemberRow) -> Email:
+        """The member's Google-side address, by the same rule the sweep uses."""
+        addresses = [a for a in (target.email, target.alternate_email) if a is not None]
+        return sync_target(target, await email_statuses(self._pool, addresses))
+
     async def _mirror_add(
         self,
         actor_id: UUID,
@@ -213,7 +219,10 @@ class RecordsGroupModify:
         target: MemberRow,
         group_email: Email | None,
     ) -> None:
-        outcome = await self._group_sync.add(group_email, sync_target(target))
+        address = await self._target_address(target)
+        outcome = await self._group_sync.add(group_email, address)
+        if outcome in ACCEPTED:
+            await remember_accepted(self._pool, [address])
         await record_best_effort(
             self._audit_sink,
             "group.member_added",
@@ -230,7 +239,9 @@ class RecordsGroupModify:
         target: MemberRow,
         group_email: Email | None,
     ) -> None:
-        outcome = await self._group_sync.remove(group_email, sync_target(target))
+        outcome = await self._group_sync.remove(
+            group_email, await self._target_address(target)
+        )
         await record_best_effort(
             self._audit_sink,
             "group.member_removed",

@@ -10,7 +10,7 @@ import asyncio
 from uuid import uuid4
 
 import psycopg
-from behave import given, then, when
+from behave import given, step, then, when
 
 from rosadmin.db import make_pool
 from rosadmin.db.audit import RecordingAuditSink
@@ -182,6 +182,15 @@ def step_member(context, email, standing):
     context.member_ids[email] = row[0]
 
 
+@step('"{email:S}" records the alternate "{alternate:S}"')
+def step_records_alternate(context, email, alternate):
+    with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
+        conn.execute(
+            "UPDATE members SET alternate_email = %s WHERE email = %s",
+            (alternate, email),
+        )
+
+
 @given('"{email}" holds a "{role}" row on "{body}"')
 def step_holds_role(context, email, role, body):
     member_id = context.member_ids[email]
@@ -275,7 +284,9 @@ def step_google_fixed_and_sweep(context):
 @then("{count:d} addresses are recorded unmirrorable")
 def step_count_recorded(context, count):
     with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
-        cursor = conn.execute("SELECT count(*) FROM unmirrorable_addresses")
+        cursor = conn.execute(
+            "SELECT count(*) FROM google_email_status WHERE status <> 'accepted'"
+        )
         row = cursor.fetchone()
     assert row is not None
     assert row[0] == count
@@ -300,7 +311,7 @@ def _backdate_refusals(context, addresses: list[str], days: int) -> None:
     with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
         with conn.cursor() as cursor:
             cursor.executemany(
-                "INSERT INTO unmirrorable_addresses (address, reason, observed_at) "
+                "INSERT INTO google_email_status (address, status, observed_at) "
                 "VALUES (%s, %s, now() - make_interval(days => %s::int))",
                 [
                     (address.casefold(), SyncOutcome.NoGoogleAccount.value, days)
@@ -415,7 +426,7 @@ def step_cohort_offered(context, count):
 def step_recorded_unmirrorable(context, address, reason):
     with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
         cursor = conn.execute(
-            "SELECT reason FROM unmirrorable_addresses WHERE address = %s",
+            "SELECT status FROM google_email_status WHERE address = %s",
             (address.casefold(),),
         )
         row = cursor.fetchone()
@@ -423,10 +434,17 @@ def step_recorded_unmirrorable(context, address, reason):
     assert row[0] == reason
 
 
+@then('"{address:S}" is recorded as accepted')
+def step_recorded_accepted(context, address):
+    step_recorded_unmirrorable(context, address, "accepted")
+
+
 @then("no address is recorded unmirrorable")
 def step_nothing_recorded(context):
     with psycopg.connect(context.db.superuser_dsn, autocommit=True) as conn:
-        cursor = conn.execute("SELECT count(*) FROM unmirrorable_addresses")
+        cursor = conn.execute(
+            "SELECT count(*) FROM google_email_status WHERE status <> 'accepted'"
+        )
         row = cursor.fetchone()
     assert row is not None
     assert row[0] == 0, "a refusal was written off against a member"

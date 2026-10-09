@@ -47,7 +47,7 @@ class Persona(Enum):
     #: The flag set with no leadership body behind it - the EmptyLeader anomaly.
     MarkedNoBody = "marked_no_body"
     #: A good-standing member whose primary is not a gmail but whose alternate-email
-    #: property is - the sync_email rule's alternate-wins case.
+    #: property is - the case where a gmail alternate is mirrored instead.
     AltGmail = "alt_gmail"
 
     @classmethod

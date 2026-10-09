@@ -14,7 +14,6 @@ from rosadmin.membership.source import (
     MembershipSource,
     Standing,
     assess,
-    sync_email,
 )
 
 
@@ -35,25 +34,6 @@ def test_member_is_frozen_and_carries_standing():
     assert m.email == "susie@example.com"
     with pytest.raises(FrozenInstanceError):
         setattr(m, "email", "other@example.com")
-
-
-@pytest.mark.parametrize(
-    "primary,alternate,expected",
-    [
-        (Email("susie@gmail.com"), Email("noelle@gmail.com"), "susie@gmail.com"),
-        (Email("susie@portlanddsa.org"), Email("noelle@gmail.com"), "noelle@gmail.com"),
-        (
-            Email("susie@portlanddsa.org"),
-            Email("noelle@example.com"),
-            "susie@portlanddsa.org",
-        ),
-        (Email("susie@portlanddsa.org"), None, "susie@portlanddsa.org"),
-    ],
-)
-def test_sync_email_prefers_a_gmail_primary_then_a_gmail_alternate(
-    primary, alternate, expected
-):
-    assert sync_email(primary, alternate) == expected
 
 
 _BODY = frozenset({Leadership(BodyType.Committee, "Steering")})

@@ -22,7 +22,7 @@ import psycopg
 from psycopg.rows import class_row
 from psycopg_pool import AsyncConnectionPool
 
-from rosadmin.group_sync import EXAMPLE_DOMAIN, sync_target
+from rosadmin.group_sync import EXAMPLE_DOMAIN, EmailStatuses, sync_target
 from rosadmin.membership.source import Email
 
 _LINKED_LEADER_ROWS = """
@@ -89,6 +89,7 @@ def _admit(
     audiences: dict[Email, dict[str, UUID]],
     group_email: Email,
     row: _AudienceRow | _MemberRow,
+    statuses: EmailStatuses,
 ) -> None:
     """Resolve one row's sync address into `audiences`, or drop it.
 
@@ -96,14 +97,14 @@ def _admit(
     the gate would refuse to deliver to must not appear in desired state
     either, or every sweep would plan an add the gate then skips.
     """
-    address = sync_target(row)
+    address = sync_target(row, statuses)
     if address.lower().endswith(EXAMPLE_DOMAIN):
         return
     audiences.setdefault(group_email, {})[address.casefold()] = row.member_id
 
 
 async def desired_audiences(
-    pool: AsyncConnectionPool, main_group_email: Email
+    pool: AsyncConnectionPool, main_group_email: Email, statuses: EmailStatuses
 ) -> dict[Email, dict[str, UUID]]:
     """The whole audience map under one REPEATABLE READ snapshot.
 
@@ -115,13 +116,13 @@ async def desired_audiences(
         await conn.set_isolation_level(psycopg.IsolationLevel.REPEATABLE_READ)
         try:
             async with conn.transaction():
-                return await _audiences_in(conn, main_group_email)
+                return await _audiences_in(conn, main_group_email, statuses)
         finally:
             await conn.set_isolation_level(None)
 
 
 async def _audiences_in(
-    conn: psycopg.AsyncConnection, main_group_email: Email
+    conn: psycopg.AsyncConnection, main_group_email: Email, statuses: EmailStatuses
 ) -> dict[Email, dict[str, UUID]]:
     audiences: dict[Email, dict[str, UUID]] = {main_group_email: {}}
     async with conn.cursor(row_factory=class_row(_AudienceRow)) as cursor:
@@ -129,11 +130,11 @@ async def _audiences_in(
             await cursor.execute(statement)
             for row in await cursor.fetchall():
                 audiences.setdefault(Email(row.group_email), {})
-                _admit(audiences, Email(row.group_email), row)
+                _admit(audiences, Email(row.group_email), row, statuses)
     async with conn.cursor(row_factory=class_row(_MemberRow)) as cursor:
         await cursor.execute(_GOOD_STANDING_ROWS)
         for member in await cursor.fetchall():
-            _admit(audiences, main_group_email, member)
+            _admit(audiences, main_group_email, member, statuses)
     await _include_empty_linked_groups(conn, audiences)
     return audiences
 
@@ -164,7 +165,10 @@ async def _include_empty_linked_groups(
 
 
 async def desired_for_group(
-    pool: AsyncConnectionPool, group_email: Email, main_group_email: Email
+    pool: AsyncConnectionPool,
+    group_email: Email,
+    main_group_email: Email,
+    statuses: EmailStatuses,
 ) -> dict[str, UUID]:
     """One group's desired set, freshly read - the pre-apply recheck.
 
@@ -184,7 +188,7 @@ async def desired_for_group(
         async with conn.cursor(row_factory=class_row(_MemberRow)) as cursor:
             await cursor.execute(statement, params)
             for row in await cursor.fetchall():
-                address = sync_target(row)
+                address = sync_target(row, statuses)
                 if address.lower().endswith(EXAMPLE_DOMAIN):
                     continue
                 desired[address.casefold()] = row.member_id

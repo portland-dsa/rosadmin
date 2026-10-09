@@ -4,6 +4,7 @@ marker that arms the fuse over them.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
 
 from psycopg_pool import AsyncConnectionPool
@@ -19,10 +20,17 @@ from rosadmin.membership.source import Email
 #: season rather than forever.
 RETRY_AFTER = timedelta(days=90)
 
-_LIVE_ADDRESSES = """
-    SELECT address
+#: How many lapsed refusals one run offers to Google again. The first run writes a
+#: whole standing cohort down at once, so the whole cohort lapses at once a season
+#: later; asking about every one of them in a single run is hundreds of doomed
+#: inserts. A run retries this many and leaves the rest withheld for the next, and
+#: since each refusal Google repeats restarts that address's clock, the cohort comes
+#: back spread across a few days rather than in one lump.
+RETRIES_PER_RUN = 25
+
+_REFUSED_ADDRESSES = """
+    SELECT address, observed_at > now() - %(retry_after)s AS live
     FROM unmirrorable_addresses
-    WHERE observed_at > now() - %(retry_after)s
 """
 
 _RECORD_ADDRESS = """
@@ -36,14 +44,27 @@ _READ_BOOTSTRAP = "SELECT bootstrapped_refusal_learning FROM bootstrap_state"
 _SET_BOOTSTRAP = "UPDATE bootstrap_state SET bootstrapped_refusal_learning = true"
 
 
-async def unmirrorable_addresses(
-    pool: AsyncConnectionPool, *, retry_after: timedelta = RETRY_AFTER
-) -> set[str]:
-    """The addresses still inside their retry window, keyed as the sweep compares."""
+@dataclass(frozen=True)
+class RefusedAddresses:
+    """Every address Google has refused, split on whether the refusal still holds.
+
+    Both sets are keyed as the sweep compares. A `lapsed` address has been refused
+    before - which is what tells a retry apart from news - but is due to be asked
+    about again.
+    """
+
+    live: frozenset[str]
+    lapsed: frozenset[str]
+
+
+async def refused_addresses(pool: AsyncConnectionPool) -> RefusedAddresses:
     async with pool.connection() as conn:
-        cursor = await conn.execute(_LIVE_ADDRESSES, {"retry_after": retry_after})
+        cursor = await conn.execute(_REFUSED_ADDRESSES, {"retry_after": RETRY_AFTER})
         rows = await cursor.fetchall()
-    return {address.lower() for (address,) in rows}
+    return RefusedAddresses(
+        live=frozenset(address.lower() for address, live in rows if live),
+        lapsed=frozenset(address.lower() for address, live in rows if not live),
+    )
 
 
 async def record_unmirrorable(

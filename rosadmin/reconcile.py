@@ -5,8 +5,8 @@ remote member list to the adds and removes that converge them. Three safety
 rules live here, in testable logic rather than in the apply loop: only plain
 USER members are ever removable (owners, managers, and nested groups survive
 every sweep), a mass removal trips a fuse instead of executing, and an address
-Google has already refused to hold is not offered again - while still counting
-as desired, so it is never swept out either.
+Google has already refused to hold is not offered again until its refusal lapses
+- while still counting as desired, so it is never swept out either.
 
 That last set - the addresses of `rosadmin.db.unmirrorable` - is read once per
 run and grows as the run learns, which is why the sweep, not the Google
@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import math
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass
 from enum import Enum
 from uuid import UUID
@@ -40,10 +41,11 @@ from rosadmin.db.prune import prune_expired
 from rosadmin.db.reconcile import desired_audiences, desired_for_group
 from rosadmin.db.roster import PullReport, pull_roster
 from rosadmin.db.unmirrorable import (
+    RETRIES_PER_RUN,
     is_refusal_learning_bootstrapped,
     mark_refusal_learning_bootstrapped,
     record_unmirrorable,
-    unmirrorable_addresses,
+    refused_addresses,
 )
 from rosadmin.google_group import (
     SECURE_SETTINGS,
@@ -102,6 +104,9 @@ class GroupPlan:
     #: them. They carry their member id, which is what the log line names - the
     #: address never reaches the journal.
     excluded: tuple[PlannedAdd, ...]
+    #: The adds that are retries - addresses whose refusal has lapsed, each one
+    #: spending a slot of the run's retry allowance.
+    retried: tuple[Email, ...]
     #: How many removals the fuse refused. Zero means it did not trip; the
     #: refused removals are absent from `removes` entirely.
     refused_removes: int
@@ -121,37 +126,34 @@ def plan_group(
     actual: list[GroupMemberEntry],
     *,
     unmirrorable: set[str],
+    lapsed_refusals: Collection[str] = frozenset(),
+    retry_slots: int = 0,
     allow_mass_removal: bool,
 ) -> GroupPlan:
-    """Diff one group. `desired` keys and `unmirrorable` are casefolded addresses.
+    """Diff one group. `desired` keys and the refusal sets are casefolded addresses.
 
     Adds compare against every actual entry regardless of role or type - a
-    member already present as a MANAGER must not be re-added as a MEMBER.
+    member already present as a MANAGER is not be re-added as a MEMBER.
     Removes draw only from plain USER MEMBER entries, so owners, managers,
-    and nested groups are structurally untouchable. Addresses compare
-    casefolded because Google reports case it does not enforce.
-
-    An address Google has refused is excluded from the adds - it lands in
-    `excluded` instead - but it stays desired, and so is still counted against
-    the removes. A member Google will not admit is not a member Google should
-    evict: some are already in their group from before their account was
-    deleted, and an outage answering 412 to every insert must not be able to
-    empty a group. Dropping the address from `desired` outright - the shape
-    `db.reconcile._admit` uses for `@example.com`, where the address can never
-    be present in the first place - would instead make every refused member a
-    stranger for the next sweep to remove.
+    and nested groups are structurally untouchable.
     """
     present = {entry.email.casefold() for entry in actual}
     adds: list[PlannedAdd] = []
     excluded: list[PlannedAdd] = []
+    retried: list[Email] = []
     for address, member_id in sorted(desired.items()):
         if address in present:
             continue
         planned = PlannedAdd(address=Email(address), member_id=member_id)
         if address in unmirrorable:
             excluded.append(planned)
-        else:
+        elif address not in lapsed_refusals:
             adds.append(planned)
+        elif len(retried) < retry_slots:
+            retried.append(planned.address)
+            adds.append(planned)
+        else:
+            excluded.append(planned)
     removable = [
         entry
         for entry in actual
@@ -167,6 +169,7 @@ def plan_group(
         adds=tuple(adds),
         removes=() if fuse_trips else removes,
         excluded=tuple(excluded),
+        retried=tuple(retried),
         refused_removes=len(removes) if fuse_trips else 0,
     )
 
@@ -425,9 +428,9 @@ class GroupOutcome:
     #: Desired members not offered because Google has already refused their
     #: address. Steady-state - the size of the sediment - and not a failure.
     excluded: int
-    #: Refusals Google issued this run that it had not issued before - counted as
-    #: they are received, not as they are stored, so that no failure of the store
-    #: can quiet the alarm that reads them. News, not sediment.
+    #: Refusals Google issued this run, retries of lapsed refusals among them -
+    #: counted as they are received, not as they are stored, so that no failure of
+    #: the store can quiet the alarm that reads them.
     unmirrorable: int
     refused: int
     failed: int
@@ -451,11 +454,13 @@ class RefusalReport:
     """What one run did with the refusals Google issued it.
 
     `received` counts them as Google gave them, so no failure of the store can
-    quiet what reads it. `recorded` is what actually landed. `refused` is the fuse
-    saying no - the batch was too large to believe, and none of it was written.
+    quiet what reads it; `retries` is how many of those were lapsed refusals asked
+    about again. `recorded` is what actually landed. `refused` is the fuse saying
+    no - the batch was too large to believe, and none of it was written.
     """
 
     received: int
+    retries: int
     recorded: int
     refused: int
 
@@ -600,7 +605,12 @@ async def _sweep_locked(
     # refusal is met: a group swept later never re-offers an address an earlier
     # group has just proved bad, so a run meets each address once rather than once
     # per group it appears in.
-    unmirrorable = await unmirrorable_addresses(pool)
+    refused = await refused_addresses(pool)
+    unmirrorable = set(refused.live)
+    # Shrinks as groups spend the run's retries. An address retried in one group is
+    # no longer a retry in the next.
+    lapsed_refusals = set(refused.lapsed)
+    retry_slots = RETRIES_PER_RUN
     # Held, not written, until the run is over: only the size of the whole batch
     # can tell a trickle of new refusals from an event, and `_commit_refusals` is
     # where that judgement is made.
@@ -635,8 +645,12 @@ async def _sweep_locked(
             desired,
             actual,
             unmirrorable=unmirrorable,
+            lapsed_refusals=lapsed_refusals,
+            retry_slots=retry_slots,
             allow_mass_removal=allow_mass_removal,
         )
+        lapsed_refusals.difference_update(plan.retried)
+        retry_slots -= len(plan.retried)
         if plan.fuse_tripped:
             logger.error(
                 "mass-removal fuse tripped on %s: refusing %d removals "
@@ -663,48 +677,47 @@ async def _sweep_locked(
         groups=tuple(outcomes),
         lister_available=True,
         provision=provision_report,
-        refusals=await _commit_refusals(pool, refusals, dry_run=dry_run),
+        refusals=await _commit_refusals(
+            pool, refusals, known=refused.lapsed, dry_run=dry_run
+        ),
     )
 
 
 async def _commit_refusals(
-    pool: AsyncConnectionPool, refusals: list[Refusal], *, dry_run: bool
+    pool: AsyncConnectionPool,
+    refusals: list[Refusal],
+    *,
+    known: frozenset[str],
+    dry_run: bool,
 ) -> RefusalReport:
-    """Write down what Google refused this run - or, past the fuse, refuse to.
-
-    Nothing is written until the whole run has been seen, because the size of the
-    batch is the only thing that tells sediment from an event. A first run meets
-    the entire standing cohort at once and writes it freely, arming the fuse
-    behind itself; an armed run that suddenly meets dozens is being told something
-    about Google, not about the roster, and recording that would suppress those
-    members for a season and then - having nothing left to learn - report itself
-    green forever after. So it records none of them, says so, and fails. The
-    addresses are simply offered again next run, which is where they started.
-    """
+    """Write down what Google refused this run."""
     received = len(refusals)
+    news = sum(1 for refusal in refusals if refusal.address.lower() not in known)
+    retries = received - news
     if dry_run:
         if received > 0:
             logger.info("dry-run: would record %d refused addresses", received)
-        return RefusalReport(received=received, recorded=0, refused=0)
+        return RefusalReport(received=received, retries=retries, recorded=0, refused=0)
     bootstrapped = await is_refusal_learning_bootstrapped(pool)
-    if bootstrapped and received > REFUSAL_FUSE_CEILING:
+    if bootstrapped and news > REFUSAL_FUSE_CEILING:
         logger.error(
             "refusal fuse: google refused %d addresses it had not refused before, "
-            "past the ceiling of %d; recording none of them. nobody was removed and "
-            "nobody is newly withheld - the sweep will offer them all again next run "
-            "- but a refusal on this scale is a change outside the roster, and the "
-            "runbook says what to look at",
-            received,
+            "past the ceiling of %d; recording none of them.",
+            news,
             REFUSAL_FUSE_CEILING,
         )
-        return RefusalReport(received=received, recorded=0, refused=received)
+        return RefusalReport(
+            received=received, retries=retries, recorded=0, refused=received
+        )
     recorded = 0
     for refusal in refusals:
         if await _remember_refusal(pool, refusal):
             recorded += 1
     if not bootstrapped and recorded > 0:
         await mark_refusal_learning_bootstrapped(pool)
-    return RefusalReport(received=received, recorded=recorded, refused=0)
+    return RefusalReport(
+        received=received, retries=retries, recorded=recorded, refused=0
+    )
 
 
 def _recheck(plan: GroupPlan, fresh: dict[str, UUID]) -> GroupPlan:
@@ -721,6 +734,7 @@ def _recheck(plan: GroupPlan, fresh: dict[str, UUID]) -> GroupPlan:
         adds=tuple(a for a in plan.adds if a.address.casefold() in fresh),
         removes=tuple(r for r in plan.removes if r.casefold() not in fresh),
         excluded=tuple(e for e in plan.excluded if e.address.casefold() in fresh),
+        retried=tuple(r for r in plan.retried if r.casefold() in fresh),
         refused_removes=plan.refused_removes,
     )
 

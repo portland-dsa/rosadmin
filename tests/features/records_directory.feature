@@ -7,8 +7,9 @@ Feature: Records-backed reads over live HTTP
   fake-login - the real login gate lands separately.
 
   Background:
-    Given the persona roster "ralsei@example.com=leader,kris@example.com=good_standing,susie@example.com=lapsed"
+    Given the persona roster "ralsei@example.com=leader,kris@example.com=good_standing,susie@example.com=lapsed,flowery@example.com=co_leader"
     When Ralsei pulls the roster
+    And "flowery@example.com" is banned
     And Ralsei is logged in against records as "ralsei@example.com"
 
   Scenario: A leader's groups carry only the bodies they lead, each with its leaders
@@ -24,7 +25,15 @@ Feature: Records-backed reads over live HTTP
       | email               | status        |
       | kris@example.com    | good_standing |
       | susie@example.com   | dues_expired  |
+      | flowery@example.com | not_found     |
       | nobody@example.com  | not_found     |
+
+  Scenario: Flowery's ban hides her from her co-leader and ends a session she already holds
+    When Ralsei fetches his groups from records
+    Then the returned group "Steering" does not list "flowery@example.com"
+    When Flowery is logged in against records as "flowery@example.com"
+    And Flowery fetches her groups from records
+    Then the response is 404 "not_found"
 
   Scenario: A mutation route answers 501 in the deployed shape while mutations are unwired
     When a client attempts to add a member without mutations wired

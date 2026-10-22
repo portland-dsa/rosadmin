@@ -95,8 +95,9 @@ _REKEY_MEMBER = "UPDATE members SET st_id = %(st_id)s WHERE id = %(id)s"
 
 #: Folding one member row into another, in the order that loses nothing: the
 #: manual adds move over first (a body the target already belongs to keeps the
-#: target's own row), then the adds the folded row made are re-attributed, and
-#: only then is it deleted. Its leader rows go with it - the records re-derive
+#: target's own row), then the adds the folded row made are re-attributed, then
+#: a ban on the folded row is carried onto the target (one already there stands),
+#: and only then is it deleted. Its leader rows go with it - the records re-derive
 #: the survivor's own in the same pull.
 _CARRY_MANUAL_ADDS = """
     INSERT INTO body_memberships (member_id, body_id, role, added_by, manually_added_at)
@@ -107,6 +108,11 @@ _CARRY_MANUAL_ADDS = """
 """
 _CARRY_ATTRIBUTION = """
     UPDATE body_memberships SET added_by = %(into_id)s WHERE added_by = %(from_id)s
+"""
+_CARRY_BAN = """
+    INSERT INTO member_bans (member_id, banned_at, note)
+    SELECT %(into_id)s, banned_at, note FROM member_bans WHERE member_id = %(from_id)s
+    ON CONFLICT (member_id) DO NOTHING
 """
 _DELETE_FOLDED_MEMBER = "DELETE FROM members WHERE id = %(from_id)s"
 
@@ -433,6 +439,7 @@ async def _merge_duplicates(
         fold = {"from_id": from_id, "into_id": into_id}
         await conn.execute(_CARRY_MANUAL_ADDS, fold)
         await conn.execute(_CARRY_ATTRIBUTION, fold)
+        await conn.execute(_CARRY_BAN, fold)
         await conn.execute(_DELETE_FOLDED_MEMBER, fold)
     return tuple(
         AccountMerge(

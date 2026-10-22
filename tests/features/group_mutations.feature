@@ -16,6 +16,8 @@ Feature: Leader add/remove member endpoints with audit and Google mirror
     And Spamton leads "Steering"
     And a good-standing member "kris@example.org"
     And a lapsed member "berdly@example.org"
+    And a good-standing member "flowery@example.org"
+    And "flowery@example.org" is banned
 
   Scenario: Ralsei adds a good-standing member to his linked body
     When Ralsei adds "kris@example.org" to the body "Steering"
@@ -68,11 +70,12 @@ Feature: Leader add/remove member endpoints with audit and Google mirror
     And the sync recorded exactly 0 calls
 
     Examples:
-      | actor   | operation | target             | body             | status | problem              |
-      | Ralsei  | add       | berdly@example.org | Steering         | 409    | member_not_eligible  |
-      | Ralsei  | add       | Noelle             | Steering         | 409    | already_leader       |
-      | Susie   | remove    | Noelle             | Steering         | 403    | leader_not_removable |
-      | Susie   | remove    | kris@example.org   | Steering         | 404    | not_a_member         |
-      | Susie   | add       | kris@example.org   | Fun Gang Reunion | 404    | not_found            |
-      | Susie   | remove    | kris@example.org   | Fun Gang Reunion | 404    | not_found            |
-      | Spamton | add       | not-a-uuid         | Steering         | 422    | invalid_request      |
+      | actor   | operation | target              | body             | status | problem              |
+      | Ralsei  | add       | berdly@example.org  | Steering         | 409    | member_not_eligible  |
+      | Ralsei  | add       | flowery@example.org | Steering         | 409    | member_not_eligible  |
+      | Ralsei  | add       | Noelle              | Steering         | 409    | already_leader       |
+      | Susie   | remove    | Noelle              | Steering         | 403    | leader_not_removable |
+      | Susie   | remove    | kris@example.org    | Steering         | 404    | not_a_member         |
+      | Susie   | add       | kris@example.org    | Fun Gang Reunion | 404    | not_found            |
+      | Susie   | remove    | kris@example.org    | Fun Gang Reunion | 404    | not_found            |
+      | Spamton | add       | not-a-uuid          | Steering         | 422    | invalid_request      |

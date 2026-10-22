@@ -33,6 +33,7 @@ _TABLES = (
     "members",
     "leadership_bodies",
     "body_memberships",
+    "member_bans",
     "google_email_status",
     "sessions",
     "jti_replay",
@@ -229,3 +230,14 @@ def one_row[R](cursor: psycopg.Cursor[R]) -> R:
     row = cursor.fetchone()
     assert row is not None
     return row
+
+
+def ban(dsn: str, email: str) -> None:
+    """Ban the member holding `email`, as an operator does by hand."""
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        cursor = conn.execute(
+            "INSERT INTO member_bans (member_id, note)"
+            " SELECT id, 'leaked documents' FROM members WHERE email = %s",
+            (email,),
+        )
+        assert cursor.rowcount == 1, f"no member holds {email!r}"

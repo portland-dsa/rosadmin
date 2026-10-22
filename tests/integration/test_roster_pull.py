@@ -21,6 +21,7 @@ from rosadmin.db import make_pool
 from rosadmin.db.audit import RecordingAuditSink
 from rosadmin.db.roster import LAPSE_FUSE_FLOOR, PullReport, pull_roster
 from rosadmin.membership.source import BodyType, Email, Leadership, Member, Standing
+from tests.support.pg import ban
 
 pytestmark = pytest.mark.integration
 
@@ -262,6 +263,35 @@ async def test_merge_keeps_manual_adds_and_their_attribution(
         )
         == adds_after
     )
+
+
+@pytest.mark.parametrize(
+    "survivor_before",
+    [
+        pytest.param(None, id="survivor-takes-over-the-banned-row"),
+        pytest.param(
+            _member(2, "flowery.alt@example.com", 999),
+            id="banned-row-folds-into-the-survivor",
+        ),
+    ],
+)
+async def test_merge_keeps_a_ban_on_the_survivor(database, survivor_before) -> None:
+    # Flowery is banned on one Solidarity Tech account; merging it into another
+    # must not hand her a clean record.
+    before = [_member(1, "flowery@example.com", 555)]
+    if survivor_before is not None:
+        before.append(survivor_before)
+    await _pull(database, before, RecordingAuditSink())
+    ban(database.superuser_dsn, "flowery@example.com")
+
+    survivor = _member(2, "flowery@example.com", 999)
+    report = await _pull(database, [survivor], RecordingAuditSink())
+
+    assert [(m.survivor_st_id, m.duplicate_st_id) for m in report.merges] == [(2, 1)]
+    assert _select(
+        database,
+        "SELECT m.st_id, b.note FROM member_bans b JOIN members m ON m.id = b.member_id",
+    ) == [(2, "leaked documents")]
 
 
 async def test_pull_stores_the_chosen_name(database) -> None:

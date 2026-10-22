@@ -220,8 +220,8 @@ async def callback(
 
     # The grant rule's second half: botonio only vouches for Discord membership,
     # not chapter leadership, so the stored assessment is the one place that
-    # decision is made. Absence from the records cache and "not currently a
-    # leader" both deny the same way; only the anomalous assessments - the raw
+    # decision is made. Absence from the records cache, a ban, and "not currently
+    # a leader" all deny the same way; only the anomalous assessments - the raw
     # flag and the derived roles disagreeing - are worth an operator's attention.
     try:
         discord_id = int(assertion.discord_id)
@@ -234,6 +234,9 @@ async def callback(
     row = await gate_lookup(request.app.state.pool, discord_id)
     if row is None:
         await _audit_denied(request, assertion, "not_in_cache")
+        return _fail("?login=denied")
+    if row.banned:
+        await _audit_denied(request, assertion, "banned")
         return _fail("?login=denied")
     if row.assessment.is_anomalous:
         logger.warning(ANOMALY_WARNING, row.member_id, row.assessment.value)

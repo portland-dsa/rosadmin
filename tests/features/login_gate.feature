@@ -26,6 +26,13 @@ Feature: The records gate on the botonio login callback
     And a denial audit row is recorded
     And the operator warning is logged
 
+  Scenario: Flowery, a stored leader who has been banned, is denied
+    Given a member stored as Leader
+    And that member is banned
+    When Flowery begins and returns from the login against records
+    Then the login is denied with no reason
+    And a denial audit row records the stage "banned"
+
   Scenario: Noelle, absent from the records cache, is denied
     Given no member is stored for the login
     When Noelle begins and returns from the login against records

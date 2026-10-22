@@ -61,6 +61,7 @@ def _call(context, method, path, **kwargs):
 
 
 @when('Ralsei is logged in against records as "{email}"')
+@when('Flowery is logged in against records as "{email}"')
 def step_login(context, email):
     row = _query_one(
         context.db.app_dsn,
@@ -82,6 +83,7 @@ def step_login(context, email):
 
 
 @when("Ralsei fetches his groups from records")
+@when("Flowery fetches her groups from records")
 def step_fetch(context):
     context.response = _call(context, "GET", "/api/me/groups")
 
@@ -117,6 +119,13 @@ def step_group_led(context, name, leader_name):
         m["full_name"] == leader_name and m["role"] == "leader"
         for m in group["members"]
     ), group
+
+
+@then('the returned group "{name}" does not list "{email}"')
+def step_group_omits(context, name, email):
+    groups = context.response.json()
+    group = next(g for g in groups if g["name"] == name)
+    assert all(m["email"] != email for m in group["members"]), group
 
 
 @then('the records search status is "{status}"')

@@ -35,6 +35,17 @@ Feature: The reconcile sweep converges Google Groups to the records
     And the group "everyone@example.net" does not contain "susie@example.net"
     And an audit row records action "sweep_member_removed"
 
+  Scenario: Flowery is banned while in good standing and is removed from every group
+    Given a member "flowery@example.net" in standing "good_standing"
+    And "flowery@example.net" holds a "member" row on "Steering"
+    When the sweep runs
+    Then the group "steering-members@example.net" contains "flowery@example.net"
+    When "flowery@example.net" is banned
+    And the sweep runs
+    Then the group "everyone@example.net" does not contain "flowery@example.net"
+    And the group "steering-members@example.net" does not contain "flowery@example.net"
+    And an audit row records action "sweep_member_removed"
+
   Scenario: A stranded old address is cleared and the current one takes its place
     Given a member "kris@example.net" in standing "good_standing"
     And the group "everyone@example.net" already holds "old-kris@example.net"

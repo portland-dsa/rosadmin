@@ -37,7 +37,8 @@ _DELETE_MEMBER = """
 
 _MEMBER_BY_ID = """
     SELECT id, first_name, last_name, alternate_name, email, alternate_email,
-           discord_user_id, standing
+           discord_user_id, standing,
+           id IN (SELECT member_id FROM member_bans) AS banned
     FROM members
     WHERE id = %s
 """

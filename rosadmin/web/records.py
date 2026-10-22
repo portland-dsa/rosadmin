@@ -82,9 +82,13 @@ def _display_name(row: _NameParts) -> str:
 
 
 async def _resolve_member(pool: AsyncConnectionPool, principal: Principal) -> MemberRow:
-    """The acting member behind a session, or 404 - shared by reads and mutations."""
+    """The acting member behind a session, or 404 - shared by reads and mutations.
+
+    A banned member resolves to no one, so a session opened before the ban stops
+    working at its next request.
+    """
     row = await member_by_discord(pool, int(principal.discord_id))
-    if row is None:
+    if row is None or row.banned:
         raise AppProblem(404, ProblemCode.NotFound, "unknown principal")
     return row
 
@@ -108,7 +112,9 @@ class RecordsDirectory:
 
     async def search(self, email: str) -> SearchHit | SearchMiss:
         row = await member_by_email(self._pool, email)
-        if row is None:
+        # A banned member answers as though there were no record at all, so a
+        # leader is neither shown them nor told why.
+        if row is None or row.banned:
             return SearchMiss(status="not_found")
         if row.standing is Standing.Lapsed:
             return SearchMiss(status="dues_expired")
@@ -268,7 +274,8 @@ class RecordsGroupModify:
         target = await member_row_by_id(self._pool, member_id)
         if target is None:
             raise AppProblem(404, ProblemCode.MemberNotFound, "no such member")
-        if target.standing is not Standing.GoodStanding:
+        # A ban is refused exactly as a lapse is, without saying which it was.
+        if target.banned or target.standing is not Standing.GoodStanding:
             raise AppProblem(
                 409, ProblemCode.MemberNotEligible, "member is not in good standing"
             )

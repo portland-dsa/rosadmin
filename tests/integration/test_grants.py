@@ -56,6 +56,30 @@ def test_app_role_may_record_an_address_status_but_not_erase_it(database) -> Non
             conn.execute("DELETE FROM google_email_status")
 
 
+def test_app_role_may_carry_a_ban_but_not_lift_it(database) -> None:
+    with psycopg.connect(database.app_dsn, autocommit=True) as conn:
+        member_id = one_row(
+            conn.execute(
+                "INSERT INTO members (st_id, email, standing) VALUES (%s, %s, %s)"
+                " RETURNING id",
+                (1, "flowery@example.com", "good_standing"),
+            )
+        )[0]
+        conn.execute(
+            "INSERT INTO member_bans (member_id, note) VALUES (%s, %s)",
+            (member_id, "leaked documents"),
+        )
+        assert conn.execute("SELECT member_id FROM member_bans").fetchall() == [
+            (member_id,)
+        ]
+        for statement in (
+            "UPDATE member_bans SET note = 'pardoned'",
+            "DELETE FROM member_bans",
+        ):
+            with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                conn.execute(statement)
+
+
 def test_app_role_may_link_a_body_but_not_rename_it(database) -> None:
     with psycopg.connect(database.superuser_dsn, autocommit=True) as conn:
         body_id = one_row(

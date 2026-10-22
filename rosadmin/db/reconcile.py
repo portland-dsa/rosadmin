@@ -10,7 +10,9 @@ could be undone from minutes to milliseconds.
 Addresses are resolved through the same `sync_target` rule the panel's
 mirror uses, and a record resolving to an unusable example-domain address is
 absent from every desired set: it can never be added, and a stray copy in a
-remote group diffs out as a stranger.
+remote group diffs out as a stranger. A banned member (`member_bans`) is
+absent the same way, whatever their standing, so the sweep removes them from
+every group they are in.
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ _LINKED_LEADER_ROWS = """
     WHERE bm.role = 'leader'
       AND lb.leader_google_group_email IS NOT NULL
       AND m.standing = 'good_standing'
+      AND m.id NOT IN (SELECT member_id FROM member_bans)
 """
 
 _LINKED_MEMBER_ROWS = """
@@ -45,12 +48,14 @@ _LINKED_MEMBER_ROWS = """
     WHERE bm.role = 'member'
       AND lb.member_google_group_email IS NOT NULL
       AND m.standing = 'good_standing'
+      AND m.id NOT IN (SELECT member_id FROM member_bans)
 """
 
 _GOOD_STANDING_ROWS = """
     SELECT m.id AS member_id, m.email, m.alternate_email
     FROM members m
     WHERE m.standing = 'good_standing'
+      AND m.id NOT IN (SELECT member_id FROM member_bans)
 """
 
 _ONE_LINKED_GROUP_ROWS = """
@@ -59,6 +64,7 @@ _ONE_LINKED_GROUP_ROWS = """
     JOIN leadership_bodies lb ON lb.id = bm.body_id
     JOIN members m ON m.id = bm.member_id
     WHERE m.standing = 'good_standing'
+      AND m.id NOT IN (SELECT member_id FROM member_bans)
       AND (
           (bm.role = 'leader' AND lb.leader_google_group_email = %(group_email)s)
           OR (bm.role = 'member' AND lb.member_google_group_email = %(group_email)s)

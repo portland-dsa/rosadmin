@@ -21,6 +21,7 @@ from rosadmin.web.jti import InMemoryJtiCache
 from rosadmin.web.sessions import InMemorySessionStore
 from rosadmin.web.settings import WebSettings
 from tests.support.paseto import keypair, sign_assertion
+from tests.support.pg import ban
 
 BASE = "https://testserver"
 
@@ -37,6 +38,7 @@ _SETTINGS = SsoSettings(
 #: row from a prior one.
 _ST_ID = 90001
 _DISCORD_ID = 900001001
+_EMAIL = "gate-subject@example.com"
 
 #: A raw flag consistent with `assess()`'s own rule, so a seeded row looks
 #: like a pull would have produced it rather than an impossible combination.
@@ -63,7 +65,7 @@ def _seed(dsn: str, assessment: LeadershipAssessment) -> None:
             " leadership_assessment) VALUES (%s, %s, %s, %s, %s, %s)",
             (
                 _ST_ID,
-                "gate-subject@example.com",
+                _EMAIL,
                 "good_standing",
                 _DISCORD_ID,
                 assessment in _FLAGGED,
@@ -75,6 +77,11 @@ def _seed(dsn: str, assessment: LeadershipAssessment) -> None:
 @given("a member stored as {assessment_name}")
 def step_seed(context, assessment_name):
     _seed(context.db.superuser_dsn, LeadershipAssessment[assessment_name])
+
+
+@given("that member is banned")
+def step_ban_seeded(context) -> None:
+    ban(context.db.superuser_dsn, _EMAIL)
 
 
 @given("no member is stored for the login")
@@ -206,6 +213,14 @@ def step_denial_audit(context) -> None:
     assert any(r.action == "login_denied" for r in context.audit.records), (
         context.audit.records
     )
+
+
+@then('a denial audit row records the stage "{stage}"')
+def step_denial_stage(context, stage) -> None:
+    assert any(
+        r.action == "login_denied" and r.detail == {"stage": stage}
+        for r in context.audit.records
+    ), context.audit.records
 
 
 @then("the operator warning is logged")

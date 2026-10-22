@@ -35,6 +35,9 @@ is one forward migration with an optional `.rollback.sql` companion.
   `google_email_status` and adds an `accepted` status beside the two refusals, so
   the table records what Google last said about each address. Seeds `accepted` for
   the address each good-standing member was already mirrored under.
+- `create_member_bans.sql` - the members the chapter has banned from its groups and
+  the leader panel, with when and why. Kept apart from `members` so the roster pull
+  can never overwrite a ban; the app role may read and carry one but never lift it.
 
 Roles are not here: they are cluster-global while migrations run per-database, so
 the roles themselves (the group `rosadmin_app`, each stage's login role, and the

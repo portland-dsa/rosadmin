@@ -25,7 +25,8 @@ def full_name(first: str | None, last: str | None, alternate: str | None) -> str
 
 @dataclass(frozen=True)
 class MemberRow:
-    """One `members` row, as much of it as a directory read needs."""
+    """One `members` row, as much of it as a directory read needs, and whether
+    `member_bans` holds it."""
 
     id: UUID
     first_name: str | None
@@ -35,6 +36,7 @@ class MemberRow:
     alternate_email: str | None
     discord_user_id: int | None
     standing: Standing
+    banned: bool
 
 
 @dataclass(frozen=True)
@@ -63,10 +65,12 @@ class LedBodyMemberRow:
 
 @dataclass(frozen=True)
 class GateRow:
-    """The login-gate projection: a Discord id's member and leadership assessment."""
+    """The login-gate projection: a Discord id's member, leadership assessment,
+    and ban."""
 
     member_id: UUID
     assessment: LeadershipAssessment
+    banned: bool
 
 
 @dataclass(frozen=True)
@@ -82,7 +86,8 @@ class BodyLinkRow:
 
 _MEMBER_BY_DISCORD = """
     SELECT id, first_name, last_name, alternate_name, email, alternate_email,
-           discord_user_id, standing
+           discord_user_id, standing,
+           id IN (SELECT member_id FROM member_bans) AS banned
     FROM members
     WHERE discord_user_id = %s
 """
@@ -91,7 +96,8 @@ _MEMBER_BY_DISCORD = """
 #: `?email=` filter is case-insensitive, so a case-mismatched search must still hit.
 _MEMBER_BY_EMAIL = """
     SELECT id, first_name, last_name, alternate_name, email, alternate_email,
-           discord_user_id, standing
+           discord_user_id, standing,
+           id IN (SELECT member_id FROM member_bans) AS banned
     FROM members
     WHERE lower(email) = lower(%s)
 """
@@ -107,6 +113,7 @@ _BODIES_LED_BY = """
 
 #: Every member of every body the acting member leads, in one round-trip: `led`
 #: pins the bodies where they are a leader, `other`/`m` expand each body's roster.
+#: A banned member is left out of every roster, as they are out of its groups.
 _LED_BODIES_WITH_MEMBERS = """
     SELECT lb.id AS body_id, lb.name AS body_name, lb.body_type,
            m.id AS member_id, m.first_name, m.last_name, m.alternate_name,
@@ -116,11 +123,13 @@ _LED_BODIES_WITH_MEMBERS = """
         ON led.body_id = lb.id AND led.member_id = %s AND led.role = 'leader'
     JOIN body_memberships other ON other.body_id = lb.id
     JOIN members m ON m.id = other.member_id
+    WHERE m.id NOT IN (SELECT member_id FROM member_bans)
     ORDER BY lb.name
 """
 
 _GATE_LOOKUP = """
-    SELECT id AS member_id, leadership_assessment AS assessment
+    SELECT id AS member_id, leadership_assessment AS assessment,
+           id IN (SELECT member_id FROM member_bans) AS banned
     FROM members
     WHERE discord_user_id = %s
 """

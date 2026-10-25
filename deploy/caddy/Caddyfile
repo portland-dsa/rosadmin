@@ -11,6 +11,10 @@
 	# ACME account contact. Point this at a monitored org mailbox, not a
 	# personal address, so certificate problem reports actually get seen.
 	email info@portlanddsa.org
+
+	# Allows other utilities to define things like on_demand_tls without
+	# affecting this one
+	import global/*.caddy
 }
 
 # Deliberately a relative path: provisioning validates a staged copy of this
